@@ -1,7 +1,11 @@
-use std::{borrow::Borrow, cmp::Ordering, fmt::{Debug, Display}};
+use std::{
+    borrow::Borrow,
+    cmp::Ordering,
+    fmt::{Debug, Display},
+};
 
 use crate::utils::{signed_to_field, ToBigUint};
-use ark_ff::{PrimeField, Zero};
+use ark_ff::{One, PrimeField, Zero};
 use ark_r1cs_std::{
     alloc::{AllocVar, AllocationMode},
     boolean::Boolean,
@@ -21,7 +25,13 @@ pub struct FloatVar<F: PrimeField> {
 
 impl<F: PrimeField> Display for FloatVar<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Sign: {}\nExponent: {}\nMantissa: {}\n", &self.sign.value().unwrap_or(F::zero()), &self.exponent.value().unwrap_or(F::zero()), &self.mantissa.value().unwrap_or(F::zero()))
+        write!(
+            f,
+            "Sign: {}\nExponent: {}\nMantissa: {}\n",
+            &self.sign.value().unwrap_or(F::zero()),
+            &self.exponent.value().unwrap_or(F::zero()),
+            &self.mantissa.value().unwrap_or(F::zero())
+        )
     }
 }
 
@@ -108,34 +118,22 @@ impl<F: PrimeField> FloatVar<F> {
         let exponent = b.select(&y.exponent, &x.exponent)?;
         let delta = &exponent + &exponent - &x.exponent - &y.exponent;
 
+        let max = FpVar::new_constant(cs.clone(), F::from(64u64))?;
+
+        let delta = delta
+            .is_cmp_unchecked(&max, Ordering::Greater, false)?
+            .select(&max, &delta)?;
+
         let v = two.pow_le(&delta.to_bits_le()?)?;
 
-        let unchanged_sign = b.select(&y.sign, &x.sign)?;
-        let unchanged_mantissa = b.select(&y.mantissa, &&x.mantissa)?;
+        let xx = &x.sign * &x.mantissa;
+        let yy = &y.sign * &y.mantissa;
 
-        let changed_sign = &x.sign + &y.sign - &unchanged_sign;
-        let changed_mantissa = &x.mantissa + &y.mantissa - &unchanged_mantissa;
-
-        let (changed_mantissa, removed) = {
-            let changed = changed_mantissa.to_biguint();
-            let delta = delta.to_biguint().to_i64().unwrap();
-            let q = &changed >> delta;
-            let r = &changed - (&q << delta);
-            let q = FpVar::new_witness(cs.clone(), || match F::BigInt::try_from(q) {
-                Ok(q) => Ok(F::from_repr(q).unwrap()),
-                Err(_) => panic!(),
-            })?;
-            let r = FpVar::new_witness(cs.clone(), || match F::BigInt::try_from(r) {
-                Ok(r) => Ok(F::from_repr(r).unwrap()),
-                Err(_) => panic!(),
-            })?;
-            changed_mantissa.enforce_equal(&(&q * &v + &r))?;
-            // TODO: r.enforce_cmp(&v, Ordering::Less, false)?;
-            (q, r)
-        };
+        let unchanged = b.select(&xx, &yy)?;
+        let changed = (&xx + &yy - &unchanged) * &v;
 
         let (sign, exponent, mantissa) = {
-            let sum = changed_mantissa * changed_sign + unchanged_mantissa * unchanged_sign;
+            let sum = changed + unchanged;
 
             let sign = sum
                 .is_cmp_unchecked(&FpVar::zero(), Ordering::Less, false)?
@@ -144,29 +142,31 @@ impl<F: PrimeField> FloatVar<F> {
 
             let (q, e, r) = {
                 let sum = sum.to_biguint();
+                let delta = delta.to_biguint().to_i64().unwrap();
 
                 let mut normalized = sum.clone();
 
-                let mut delta_e = 0i64;
+                let mut delta_e = 0;
                 if !normalized.is_zero() {
-                    while normalized >= BigUint::from(1u64 << 53) {
+                    while normalized >= BigUint::one() << (delta + 53) {
                         delta_e += 1;
                         normalized >>= 1u8;
                     }
-                    while normalized < BigUint::from(1u64 << 52) {
+                    while normalized < BigUint::one() << (delta + 52) {
                         delta_e -= 1;
                         normalized <<= 1u8;
                     }
+                    normalized >>= delta;
                 } else {
                     delta_e = match exponent.negate()?.to_biguint().to_i64() {
                         Some(e) => e,
                         None => -exponent.to_biguint().to_i64().unwrap(),
                     } - 1023;
                 }
-                let r = if delta_e <= 0 {
+                let r = if (delta + delta_e) <= 0 {
                     BigUint::zero()
                 } else {
-                    sum - (&normalized << (delta_e))
+                    &sum - (&normalized << (delta + delta_e))
                 };
                 (
                     FpVar::new_witness(cs.clone(), || match F::BigInt::try_from(normalized) {
@@ -195,29 +195,18 @@ impl<F: PrimeField> FloatVar<F> {
                     )?)?)?
                 .enforce_equal(&Boolean::TRUE)?;
 
-            let b = e.is_cmp_unchecked(&FpVar::zero(), Ordering::Less, false)?;
-            let m = b.select(&FpVar::zero(), &e)?;
-            let n = &m - &e;
+            let delta = &delta + &e;
+            let b = delta.is_cmp_unchecked(&FpVar::zero(), Ordering::Greater, false)?;
+            let m = b.select(&delta, &FpVar::zero())?;
+            let n = &m - &delta;
             (&sum * two.pow_le(&n.to_bits_le()?)?)
                 .enforce_equal(&(&q * two.pow_le(&m.to_bits_le()?)? + &r))?;
             // TODO: constraint on r?
 
-            let g = FpVar::new_constant(cs.clone(), F::from(120u64))?;
-
-            let b = delta.is_cmp_unchecked(&g, Ordering::Greater, false)?;
-
-            let delta = b.select(&g, &delta)?;
-            let v = two.pow_le(&delta.to_bits_le()?)?;
-            let removed = b.select(&FpVar::zero(), &removed)?;
-
-            let u = (&delta + &e)
-                .is_cmp_unchecked(&FpVar::zero(), Ordering::Greater, false)?
-                .select(
-                    &two.pow_le(&(&delta + &e - FpVar::one()).to_bits_le()?)?,
-                    &FpVar::zero(),
-                )?;
-
-            let r = r * v + removed;
+            let u = b.select(
+                &two.pow_le(&(&delta - FpVar::one()).to_bits_le()?)?,
+                &FpVar::one(),
+            )?;
 
             let q = &q
                 + r.is_eq(&u)?.select(&q, &(u - r).double()?)?.to_bits_le()?[0]
@@ -285,30 +274,78 @@ mod tests {
 
     use super::*;
 
-    #[derive(Clone)]
-    pub struct Circuit {
-        a: f64,
-        b: f64,
-        c: f64,
-    }
+    #[test]
+    fn test_add() {
+        pub struct Circuit {
+            a: f64,
+            b: f64,
+            c: f64,
+        }
 
-    impl<F: PrimeField> ConstraintSynthesizer<F> for Circuit {
-        fn generate_constraints(
-            self,
-            cs: ConstraintSystemRef<F>,
-        ) -> ark_relations::r1cs::Result<()> {
-            let a = FloatVar::new_witness(cs.clone(), || Ok(self.a))?;
-            let b = FloatVar::new_witness(cs.clone(), || Ok(self.b))?;
-            let c = FloatVar::new_input(cs.clone(), || Ok(self.c))?;
-            let d = FloatVar::add(cs, &a, &b)?;
+        impl<F: PrimeField> ConstraintSynthesizer<F> for Circuit {
+            fn generate_constraints(
+                self,
+                cs: ConstraintSystemRef<F>,
+            ) -> ark_relations::r1cs::Result<()> {
+                let a = FloatVar::new_witness(cs.clone(), || Ok(self.a))?;
+                let b = FloatVar::new_witness(cs.clone(), || Ok(self.b))?;
+                let c = FloatVar::new_input(cs.clone(), || Ok(self.c))?;
+                let d = FloatVar::add(cs, &a, &b)?;
 
-            FloatVar::equal(&d, &c)?;
-            Ok(())
+                FloatVar::equal(&d, &c)?;
+                Ok(())
+            }
+        }
+
+        let rng = &mut thread_rng();
+
+        let params = generate_random_parameters::<Bls12_381, _, _>(
+            Circuit {
+                a: 0f64,
+                b: 0f64,
+                c: 0f64,
+            },
+            rng,
+        )
+        .unwrap();
+        let pvk = prepare_verifying_key(&params.vk);
+
+        for _ in 0..100 {
+            let a = -rng.gen::<f64>() * rng.gen::<u32>() as f64;
+            let b = rng.gen::<f64>() * rng.gen::<u32>() as f64;
+
+            println!("{} {}", a, b);
+            let c = a + b;
+
+            let proof = create_random_proof(Circuit { a, b, c }, &params, rng).unwrap();
+
+            assert!(verify_proof(&pvk, &proof, &FloatVar::verifier_input(c)).unwrap());
         }
     }
 
     #[test]
-    fn test() {
+    fn test_mul() {
+        pub struct Circuit {
+            a: f64,
+            b: f64,
+            c: f64,
+        }
+
+        impl<F: PrimeField> ConstraintSynthesizer<F> for Circuit {
+            fn generate_constraints(
+                self,
+                cs: ConstraintSystemRef<F>,
+            ) -> ark_relations::r1cs::Result<()> {
+                let a = FloatVar::new_witness(cs.clone(), || Ok(self.a))?;
+                let b = FloatVar::new_witness(cs.clone(), || Ok(self.b))?;
+                let c = FloatVar::new_input(cs.clone(), || Ok(self.c))?;
+                let d = FloatVar::mul(cs, &a, &b)?;
+
+                FloatVar::equal(&d, &c)?;
+                Ok(())
+            }
+        }
+
         let rng = &mut thread_rng();
 
         let params = generate_random_parameters::<Bls12_381, _, _>(
@@ -324,10 +361,10 @@ mod tests {
 
         for _ in 0..100 {
             let a = -rng.gen::<f64>();
-            let b = -rng.gen::<f64>();
+            let b = rng.gen::<f64>() * 123456789000.;
 
             println!("{} {}", a, b);
-            let c = a + b;
+            let c = a * b;
 
             let proof = create_random_proof(Circuit { a, b, c }, &params, rng).unwrap();
 
