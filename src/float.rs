@@ -262,6 +262,7 @@ mod tests {
         create_random_proof, generate_random_parameters, prepare_verifying_key, verify_proof,
     };
     use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef};
+    use ark_std::test_rng;
     use rand::{thread_rng, Rng};
 
     use super::*;
@@ -302,17 +303,41 @@ mod tests {
         .unwrap();
         let pvk = prepare_verifying_key(&params.vk);
 
-        for _ in 0..100 {
-            let a = -rng.gen::<f64>() * rng.gen::<u32>() as f64;
-            let b = rng.gen::<f64>() * rng.gen::<u32>() as f64;
-
-            println!("{} {}", a, b);
+        let test = |a: f64, b: f64| {
             let c = a + b;
 
-            let proof = create_random_proof(Circuit { a, b, c }, &params, rng).unwrap();
+            let proof = create_random_proof(Circuit { a, b, c }, &params, &mut test_rng()).unwrap();
 
-            assert!(verify_proof(&pvk, &proof, &FloatVar::verifier_input(c)).unwrap());
+            assert!(verify_proof(&pvk, &proof, &FloatVar::verifier_input(c)).unwrap(), "{} {}", a, b);
+        };
+
+        for _ in 0..20 {
+            test(-rng.gen::<f64>() * rng.gen::<u32>() as f64, rng.gen::<f64>() * rng.gen::<u32>() as f64);
         }
+
+        for _ in 0..20 {
+            test(rng.gen::<f64>() * rng.gen::<u32>() as f64, rng.gen::<f64>() * rng.gen::<u32>() as f64);
+        }
+
+        for _ in 0..20 {
+            test(rng.gen::<f64>() * rng.gen::<u32>() as f64, 0.);
+        }
+
+        for _ in 0..20 {
+            test(rng.gen::<f64>() * rng.gen::<u32>() as f64, -0.);
+        }
+
+        test(0.1, 0.2);
+        test(0.1, -0.2);
+        test(1., 1.);
+        test(1., -1.);
+        test(1., 0.9999999999999999);
+        test(1., -0.9999999999999999);
+        test(-1., 0.9999999999999999);
+        test(-1., -0.9999999999999999);
+        test(4503599627370496., -0.9999999999999999);
+        test(4503599627370496., 1.);
+        test(4503599627370496., 4503599627370496.);
     }
 
     #[test]
