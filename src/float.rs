@@ -1,8 +1,4 @@
-use std::{
-    borrow::Borrow,
-    cmp::Ordering,
-    fmt::Debug,
-};
+use std::{borrow::Borrow, cmp::Ordering, fmt::{Debug, Display}};
 
 use crate::utils::{signed_to_field, ToBigUint};
 use ark_ff::{PrimeField, Zero};
@@ -13,25 +9,19 @@ use ark_r1cs_std::{
     prelude::EqGadget,
     R1CSVar, ToBitsGadget,
 };
-use ark_relations::{
-    r1cs::{Namespace, SynthesisError},
-};
+use ark_relations::r1cs::{Namespace, SynthesisError};
 use num::{BigUint, Float, ToPrimitive};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FloatVar<F: PrimeField> {
     pub sign: FpVar<F>,
     pub exponent: FpVar<F>,
     pub mantissa: FpVar<F>,
 }
 
-impl<F: PrimeField> Debug for FloatVar<F> {
+impl<F: PrimeField> Display for FloatVar<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FloatVar")
-            .field("sign", &self.sign.value().unwrap_or(F::zero()))
-            .field("exponent", &self.exponent.value().unwrap_or(F::zero()))
-            .field("mantissa", &self.mantissa.value().unwrap_or(F::zero()))
-            .finish()
+        write!(f, "Sign: {}\nExponent: {}\nMantissa: {}\n", &self.sign.value().unwrap_or(F::zero()), &self.exponent.value().unwrap_or(F::zero()), &self.mantissa.value().unwrap_or(F::zero()))
     }
 }
 
@@ -106,7 +96,7 @@ impl<F: PrimeField> FloatVar<F> {
         }
     }
 
-    pub fn add(cs: impl Into<Namespace<F>>, x: Self, y: Self) -> Result<Self, SynthesisError> {
+    pub fn add(cs: impl Into<Namespace<F>>, x: &Self, y: &Self) -> Result<Self, SynthesisError> {
         let cs = cs.into().cs();
 
         let two = FpVar::one().double()?;
@@ -147,9 +137,9 @@ impl<F: PrimeField> FloatVar<F> {
         let (sign, exponent, mantissa) = {
             let sum = changed_mantissa * changed_sign + unchanged_mantissa * unchanged_sign;
 
-            let b = sum.is_cmp_unchecked(&FpVar::zero(), Ordering::Less, false)?;
-
-            let sign = b.select(&FpVar::one().negate()?, &FpVar::one())?;
+            let sign = sum
+                .is_cmp_unchecked(&FpVar::zero(), Ordering::Less, false)?
+                .select(&FpVar::one().negate()?, &FpVar::one())?;
             let sum = sum * &sign;
 
             let (q, e, r) = {
@@ -215,7 +205,7 @@ impl<F: PrimeField> FloatVar<F> {
             let g = FpVar::new_constant(cs.clone(), F::from(120u64))?;
 
             let b = delta.is_cmp_unchecked(&g, Ordering::Greater, false)?;
-            
+
             let delta = b.select(&g, &delta)?;
             let v = two.pow_le(&delta.to_bits_le()?)?;
             let removed = b.select(&FpVar::zero(), &removed)?;
@@ -243,19 +233,19 @@ impl<F: PrimeField> FloatVar<F> {
         })
     }
 
-    pub fn mul(cs: impl Into<Namespace<F>>, x: Self, y: Self) -> Result<Self, SynthesisError> {
+    pub fn mul(cs: impl Into<Namespace<F>>, x: &Self, y: &Self) -> Result<Self, SynthesisError> {
         let cs = cs.into().cs();
 
         let v = FpVar::new_constant(cs.clone(), F::from(1u64 << 52))?;
         let w = v.double()?;
 
-        let sign = x.sign * y.sign;
+        let sign = &x.sign * &y.sign;
         let (exponent, mantissa) = {
-            let p = x.mantissa * y.mantissa;
+            let p = &x.mantissa * &y.mantissa;
             let b = &p.to_bits_le()?[105];
 
             let p = b.select(&p, &p.double()?)?;
-            let e = x.exponent + y.exponent + b.select(&FpVar::one(), &FpVar::zero())?;
+            let e = &x.exponent + &y.exponent + b.select(&FpVar::one(), &FpVar::zero())?;
 
             let q = {
                 let q = p.to_biguint() >> 53u8;
@@ -310,7 +300,7 @@ mod tests {
             let a = FloatVar::new_witness(cs.clone(), || Ok(self.a))?;
             let b = FloatVar::new_witness(cs.clone(), || Ok(self.b))?;
             let c = FloatVar::new_input(cs.clone(), || Ok(self.c))?;
-            let d = FloatVar::add(cs, a, b)?;
+            let d = FloatVar::add(cs, &a, &b)?;
 
             FloatVar::equal(&d, &c)?;
             Ok(())
