@@ -140,7 +140,7 @@ impl<F: PrimeField> FloatVar<F> {
                 .select(&FpVar::one().negate()?, &FpVar::one())?;
             let sum = sum * &sign;
 
-            let (q, e, r) = {
+            let (q, e) = {
                 let sum = sum.to_biguint();
                 let delta = delta.to_biguint().to_i64().unwrap();
 
@@ -163,45 +163,33 @@ impl<F: PrimeField> FloatVar<F> {
                         None => -exponent.to_biguint().to_i64().unwrap(),
                     } - 1023;
                 }
-                let r = if (delta + delta_e) <= 0 {
-                    BigUint::zero()
-                } else {
-                    &sum - (&normalized << (delta + delta_e))
-                };
                 (
                     FpVar::new_witness(cs.clone(), || match F::BigInt::try_from(normalized) {
                         Ok(q) => Ok(F::from_repr(q).unwrap()),
                         Err(_) => panic!(),
                     })?,
                     FpVar::new_witness(cs.clone(), || Ok(signed_to_field::<F, _>(delta_e)))?,
-                    FpVar::new_witness(cs.clone(), || match F::BigInt::try_from(r) {
-                        Ok(r) => Ok(F::from_repr(r).unwrap()),
-                        Err(_) => panic!(),
-                    })?,
                 )
             };
 
+            let m = FpVar::new_constant(cs.clone(), F::from(1u64 << 52))?;
+            let n = m.double()?;
+
             q.is_zero()?
-                .or(&q
-                    .is_cmp(
-                        &FpVar::new_constant(cs.clone(), F::from(1u64 << 52))?,
-                        Ordering::Greater,
-                        true,
-                    )?
-                    .and(&q.is_cmp(
-                        &FpVar::new_constant(cs.clone(), F::from(1u64 << 53))?,
-                        Ordering::Less,
-                        false,
-                    )?)?)?
+                .or(&q.is_cmp(&m, Ordering::Greater, true)?.and(&q.is_cmp(
+                    &n,
+                    Ordering::Less,
+                    false,
+                )?)?)?
                 .enforce_equal(&Boolean::TRUE)?;
 
             let delta = &delta + &e;
             let b = delta.is_cmp_unchecked(&FpVar::zero(), Ordering::Greater, false)?;
-            let m = b.select(&delta, &FpVar::zero())?;
-            let n = &m - &delta;
-            (&sum * two.pow_le(&n.to_bits_le()?)?)
-                .enforce_equal(&(&q * two.pow_le(&m.to_bits_le()?)? + &r))?;
-            // TODO: constraint on r?
+
+            let r = b.select(
+                &(&sum - &q * two.pow_le(&delta.to_bits_le()?)?),
+                &FpVar::zero(),
+            )?;
 
             let u = b.select(
                 &two.pow_le(&(&delta - FpVar::one()).to_bits_le()?)?,
@@ -211,6 +199,10 @@ impl<F: PrimeField> FloatVar<F> {
             let q = &q
                 + r.is_eq(&u)?.select(&q, &(u - r).double()?)?.to_bits_le()?[0]
                     .select(&FpVar::one(), &FpVar::zero())?;
+
+            let overflow = q.is_eq(&n)?;
+            let e = e + overflow.select(&FpVar::one(), &FpVar::zero())?;
+            let q = q * overflow.select(&two.inverse()?, &FpVar::one())?;
 
             (sign, exponent + e, q)
         };
