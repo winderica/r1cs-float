@@ -2,6 +2,7 @@ use std::{
     borrow::Borrow,
     cmp::Ordering,
     fmt::{Debug, Display},
+    ops::Neg,
 };
 
 use crate::utils::{signed_to_field, ToBigUint};
@@ -13,11 +14,15 @@ use ark_r1cs_std::{
     prelude::EqGadget,
     R1CSVar, ToBitsGadget,
 };
-use ark_relations::r1cs::{Namespace, SynthesisError};
+use ark_relations::{
+    ns,
+    r1cs::{ConstraintSystemRef, Namespace, SynthesisError},
+};
 use num::{BigUint, Float, ToPrimitive};
 
 #[derive(Clone, Debug)]
 pub struct FloatVar<F: PrimeField> {
+    cs: ConstraintSystemRef<F>,
     pub sign: FpVar<F>,
     pub exponent: FpVar<F>,
     pub mantissa: FpVar<F>,
@@ -36,7 +41,7 @@ impl<F: PrimeField> Display for FloatVar<F> {
 }
 
 impl<F: PrimeField> FloatVar<F> {
-    pub fn verifier_input(i: f64) -> [F; 3] {
+    pub fn input(i: f64) -> [F; 3] {
         let (mantissa, exponent, sign) = Float::integer_decode(i);
         let sign = match sign {
             1 => F::one(),
@@ -55,25 +60,13 @@ impl<F: PrimeField> AllocVar<f64, F> for FloatVar<F> {
         f: impl FnOnce() -> Result<T, SynthesisError>,
         mode: AllocationMode,
     ) -> Result<Self, SynthesisError> {
-        let i = *f()?.borrow();
         let cs = cs.into().cs();
-        let (mantissa, exponent, sign) = Float::integer_decode(i);
-        let sign = FpVar::new_variable(
-            cs.clone(),
-            || match sign {
-                1 => Ok(F::one()),
-                -1 => Ok(-F::one()),
-                _ => Err(SynthesisError::AssignmentMissing),
-            },
-            mode,
-        )?;
-        let exponent = FpVar::new_variable(
-            cs.clone(),
-            || Ok(signed_to_field::<F, _>(exponent + 52)),
-            mode,
-        )?;
-        let mantissa = FpVar::new_variable(cs.clone(), || Ok(F::from(mantissa)), mode)?;
+        let [sign, exponent, mantissa] = Self::input(*f()?.borrow());
+        let sign = FpVar::new_variable(ns!(cs, "sign"), || Ok(sign), mode)?;
+        let exponent = FpVar::new_variable(ns!(cs, "exponent"), || Ok(exponent), mode)?;
+        let mantissa = FpVar::new_variable(ns!(cs, "mantissa"), || Ok(mantissa), mode)?;
         Ok(Self {
+            cs,
             sign,
             exponent,
             mantissa,
@@ -90,6 +83,114 @@ impl<F: PrimeField> ToBigUint for FpVar<F> {
     }
 }
 
+macro_rules! impl_ops {
+    (
+        $type: ty,
+        $trait: ident,
+        $fn: ident,
+        $assign_trait: ident,
+        $assign_fn: ident,
+        $impl: expr,
+        $($params:tt)*
+    ) => {
+        impl<'a, $($params)+> core::ops::$trait<&'a $type> for &'a $type
+        {
+            type Output = $type;
+
+            fn $fn(self, other: &'a $type) -> Self::Output {
+                ($impl)(self, other)
+            }
+        }
+
+        impl<'a, $($params)+> core::ops::$trait<$type> for &'a $type
+        {
+            type Output = $type;
+
+            fn $fn(self, other: $type) -> Self::Output {
+                core::ops::$trait::$fn(self, &other)
+            }
+        }
+
+        impl<'a, $($params)+> core::ops::$trait<&'a $type> for $type
+        {
+            type Output = $type;
+
+            fn $fn(self, other: &'a $type) -> Self::Output {
+                core::ops::$trait::$fn(&self, other)
+            }
+        }
+
+        impl<$($params)+> core::ops::$trait<$type> for $type
+        {
+            type Output = $type;
+
+            fn $fn(self, other: $type) -> Self::Output {
+                core::ops::$trait::$fn(&self, &other)
+            }
+        }
+
+        impl<$($params)+> core::ops::$assign_trait<$type> for $type
+        {
+            fn $assign_fn(&mut self, other: $type) {
+                *self = core::ops::$trait::$fn(&*self, &other);
+            }
+        }
+
+        impl<'a, $($params)+> core::ops::$assign_trait<&'a $type> for $type
+        {
+            fn $assign_fn(&mut self, other: &'a $type) {
+                *self = core::ops::$trait::$fn(&*self, other);
+            }
+        }
+    };
+}
+
+impl<F: PrimeField> Neg for FloatVar<F> {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        Self::neg(&self)
+    }
+}
+
+impl<F: PrimeField> Neg for &FloatVar<F> {
+    type Output = FloatVar<F>;
+
+    fn neg(self) -> Self::Output {
+        FloatVar::<F>::neg(self)
+    }
+}
+
+impl_ops!(
+    FloatVar<F>,
+    Add,
+    add,
+    AddAssign,
+    add_assign,
+    |a, b| { FloatVar::<F>::add(a, b).unwrap() },
+    F: PrimeField,
+);
+
+impl_ops!(
+    FloatVar<F>,
+    Sub,
+    sub,
+    SubAssign,
+    sub_assign,
+    |a, b: &'a FloatVar<F>| { FloatVar::<F>::add(a, &-b).unwrap() },
+    F: PrimeField,
+);
+
+impl_ops!(
+    FloatVar<F>,
+    Mul,
+    mul,
+    MulAssign,
+    mul_assign,
+    |a, b| { FloatVar::<F>::mul(a, b).unwrap() },
+    F: PrimeField,
+);
+
 impl<F: PrimeField> FloatVar<F> {
     pub fn equal(x: &Self, y: &Self) -> Result<(), SynthesisError> {
         x.sign.enforce_equal(&y.sign)?;
@@ -98,16 +199,17 @@ impl<F: PrimeField> FloatVar<F> {
         Ok(())
     }
 
-    pub fn neg(self) -> Self {
+    fn neg(&self) -> Self {
         Self {
-            sign: FpVar::zero() - self.sign,
-            exponent: self.exponent,
-            mantissa: self.mantissa,
+            cs: self.cs.clone(),
+            sign: FpVar::zero() - &self.sign,
+            exponent: self.exponent.clone(),
+            mantissa: self.mantissa.clone(),
         }
     }
 
-    pub fn add(cs: impl Into<Namespace<F>>, x: &Self, y: &Self) -> Result<Self, SynthesisError> {
-        let cs = cs.into().cs();
+    fn add(x: &Self, y: &Self) -> Result<Self, SynthesisError> {
+        let cs = x.cs.clone();
 
         let two = FpVar::one().double()?;
 
@@ -208,14 +310,15 @@ impl<F: PrimeField> FloatVar<F> {
         };
 
         Ok(FloatVar {
+            cs,
             sign,
             exponent,
             mantissa,
         })
     }
 
-    pub fn mul(cs: impl Into<Namespace<F>>, x: &Self, y: &Self) -> Result<Self, SynthesisError> {
-        let cs = cs.into().cs();
+    fn mul(x: &Self, y: &Self) -> Result<Self, SynthesisError> {
+        let cs = x.cs.clone();
 
         let v = FpVar::new_constant(cs.clone(), F::from(1u64 << 52))?;
         let w = v.double()?;
@@ -244,10 +347,15 @@ impl<F: PrimeField> FloatVar<F> {
                 + r.is_eq(&v)?.select(&q, &(v - r).double()?)?.to_bits_le()?[0]
                     .select(&FpVar::one(), &FpVar::zero())?;
 
-            (e, q)
+            (
+                q.is_zero()?
+                    .select(&FpVar::new_constant(cs.clone(), -F::from(1023u64))?, &e)?,
+                q,
+            )
         };
 
         Ok(FloatVar {
+            cs,
             sign,
             exponent,
             mantissa,
@@ -257,6 +365,8 @@ impl<F: PrimeField> FloatVar<F> {
 
 #[cfg(test)]
 mod tests {
+    use std::panic;
+
     use ark_bls12_381::Bls12_381;
     use ark_groth16::{
         create_random_proof, generate_random_parameters, prepare_verifying_key, verify_proof,
@@ -283,7 +393,7 @@ mod tests {
                 let a = FloatVar::new_witness(cs.clone(), || Ok(self.a))?;
                 let b = FloatVar::new_witness(cs.clone(), || Ok(self.b))?;
                 let c = FloatVar::new_input(cs.clone(), || Ok(self.c))?;
-                let d = FloatVar::add(cs, &a, &b)?;
+                let d = a + b;
 
                 FloatVar::equal(&d, &c)?;
                 Ok(())
@@ -304,19 +414,29 @@ mod tests {
         let pvk = prepare_verifying_key(&params.vk);
 
         let test = |a: f64, b: f64| {
-            let c = a + b;
+            let r = panic::catch_unwind(|| {
+                let c = a + b;
 
-            let proof = create_random_proof(Circuit { a, b, c }, &params, &mut test_rng()).unwrap();
+                let proof =
+                    create_random_proof(Circuit { a, b, c }, &params, &mut test_rng()).unwrap();
 
-            assert!(verify_proof(&pvk, &proof, &FloatVar::verifier_input(c)).unwrap(), "{} {}", a, b);
+                verify_proof(&pvk, &proof, &FloatVar::input(c)).unwrap()
+            });
+            assert!(r.is_ok() && r.unwrap(), "{} {}", a, b);
         };
 
         for _ in 0..20 {
-            test(-rng.gen::<f64>() * rng.gen::<u32>() as f64, rng.gen::<f64>() * rng.gen::<u32>() as f64);
+            test(
+                -rng.gen::<f64>() * rng.gen::<u32>() as f64,
+                rng.gen::<f64>() * rng.gen::<u32>() as f64,
+            );
         }
 
         for _ in 0..20 {
-            test(rng.gen::<f64>() * rng.gen::<u32>() as f64, rng.gen::<f64>() * rng.gen::<u32>() as f64);
+            test(
+                rng.gen::<f64>() * rng.gen::<u32>() as f64,
+                rng.gen::<f64>() * rng.gen::<u32>() as f64,
+            );
         }
 
         for _ in 0..20 {
@@ -356,7 +476,7 @@ mod tests {
                 let a = FloatVar::new_witness(cs.clone(), || Ok(self.a))?;
                 let b = FloatVar::new_witness(cs.clone(), || Ok(self.b))?;
                 let c = FloatVar::new_input(cs.clone(), || Ok(self.c))?;
-                let d = FloatVar::mul(cs, &a, &b)?;
+                let d = a * b;
 
                 FloatVar::equal(&d, &c)?;
                 Ok(())
@@ -376,16 +496,50 @@ mod tests {
         .unwrap();
         let pvk = prepare_verifying_key(&params.vk);
 
-        for _ in 0..100 {
-            let a = -rng.gen::<f64>();
-            let b = rng.gen::<f64>() * 123456789000.;
+        let test = |a: f64, b: f64| {
+            let r = panic::catch_unwind(|| {
+                let c = a * b;
 
-            println!("{} {}", a, b);
-            let c = a * b;
+                let proof =
+                    create_random_proof(Circuit { a, b, c }, &params, &mut test_rng()).unwrap();
 
-            let proof = create_random_proof(Circuit { a, b, c }, &params, rng).unwrap();
+                verify_proof(&pvk, &proof, &FloatVar::input(c)).unwrap()
+            });
+            assert!(r.is_ok() && r.unwrap(), "{} {}", a, b);
+        };
 
-            assert!(verify_proof(&pvk, &proof, &FloatVar::verifier_input(c)).unwrap());
+        for _ in 0..20 {
+            test(
+                -rng.gen::<f64>() * rng.gen::<u32>() as f64,
+                rng.gen::<f64>() * rng.gen::<u32>() as f64,
+            );
         }
+
+        for _ in 0..20 {
+            test(
+                rng.gen::<f64>() * rng.gen::<u32>() as f64,
+                rng.gen::<f64>() * rng.gen::<u32>() as f64,
+            );
+        }
+
+        for _ in 0..20 {
+            test(rng.gen::<f64>() * rng.gen::<u32>() as f64, 0.);
+        }
+
+        for _ in 0..20 {
+            test(rng.gen::<f64>() * rng.gen::<u32>() as f64, -0.);
+        }
+
+        test(0.1, 0.2);
+        test(0.1, -0.2);
+        test(1., 1.);
+        test(1., -1.);
+        test(1., 0.9999999999999999);
+        test(1., -0.9999999999999999);
+        test(-1., 0.9999999999999999);
+        test(-1., -0.9999999999999999);
+        test(4503599627370496., -0.9999999999999999);
+        test(4503599627370496., 1.);
+        test(4503599627370496., 4503599627370496.);
     }
 }

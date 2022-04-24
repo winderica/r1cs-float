@@ -64,15 +64,7 @@ impl<F: PrimeField> ConstraintSynthesizer<F> for InferenceCircuit {
         let a_var = FloatVar::new_witness(ns!(cs, "a"), || Ok(a))?;
         let b_var = FloatVar::new_witness(ns!(cs, "b"), || Ok(b))?;
 
-        let v_var = FloatVar::add(
-            ns!(cs, ""),
-            &FloatVar::add(
-                ns!(cs, ""),
-                &FloatVar::mul(ns!(cs, ""), &a_var, &x_var)?,
-                &b_var,
-            )?,
-            &y_var.neg(),
-        )?;
+        let v_var = a_var * x_var + b_var - y_var;
 
         r_var
             .is_zero()?
@@ -124,7 +116,7 @@ mod tests {
             let proof =
                 create_random_proof(InferenceCircuit { s, w: w.clone() }, &params, rng).unwrap();
 
-            let mut input = [FloatVar::verifier_input(x), FloatVar::verifier_input(y)].concat();
+            let mut input = [FloatVar::input(x), FloatVar::input(y)].concat();
 
             input.push(match r {
                 Ordering::Less => -Fr::one(),

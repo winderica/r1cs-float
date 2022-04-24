@@ -1,4 +1,3 @@
-
 use crate::float::FloatVar;
 use ark_ff::PrimeField;
 
@@ -84,48 +83,22 @@ impl<F: PrimeField> ConstraintSynthesizer<F> for TrainingCircuit {
         let mut xy_s = FloatVar::new_constant(ns!(cs, "xy_s"), 0.)?;
 
         for i in 0..l {
-            x_s = FloatVar::add(ns!(cs, ""), &x_s, &x_var[i])?;
-            y_s = FloatVar::add(ns!(cs, ""), &y_s, &y_var[i])?;
-            xy_s = FloatVar::add(
-                ns!(cs, ""),
-                &xy_s,
-                &FloatVar::mul(ns!(cs, ""), &x_var[i], &y_var[i])?,
-            )?;
-            xx_s = FloatVar::add(
-                ns!(cs, ""),
-                &xx_s,
-                &FloatVar::mul(ns!(cs, ""), &x_var[i], &x_var[i])?,
-            )?;
+            x_s += &x_var[i];
+            y_s += &y_var[i];
+            xy_s += &x_var[i] * &y_var[i];
+            xx_s += &x_var[i] * &x_var[i];
         }
 
-        FloatVar::equal(
-            &FloatVar::add(
-                ns!(cs, "a_n"),
-                &FloatVar::mul(ns!(cs, ""), &xy_s, &l_var)?,
-                &FloatVar::mul(ns!(cs, ""), &x_s, &y_s)?.neg(),
-            )?,
-            &a_n_var,
-        )?;
+        FloatVar::equal(&(&xy_s * &l_var - &x_s * &y_s), &a_n_var)?;
+
+        FloatVar::equal(&(&xx_s * &l_var - &x_s * &x_s), &a_d_var)?;
 
         FloatVar::equal(
-            &FloatVar::add(
-                ns!(cs, "a_d"),
-                &FloatVar::mul(ns!(cs, ""), &xx_s, &l_var)?,
-                &FloatVar::mul(ns!(cs, ""), &x_s, &x_s)?.neg(),
-            )?,
-            &a_d_var,
-        )?;
-
-        FloatVar::equal(
-            &FloatVar::add(
-                ns!(cs, "b_n"),
-                &FloatVar::mul(ns!(cs, ""), &y_s, &a_d_var)?,
-                &FloatVar::mul(ns!(cs, ""), &x_s, &a_n_var)?.neg(),
-            )?,
+            &(&y_s * &a_d_var - &x_s * &a_n_var),
             &b_n_var,
         )?;
 
-        FloatVar::equal(&FloatVar::mul(ns!(cs, "b_d"), &l_var, &a_d_var)?, &b_d_var)?;
+        FloatVar::equal(&(&l_var * &a_d_var), &b_d_var)?;
 
         Ok(())
     }
@@ -190,10 +163,10 @@ mod tests {
             &pvk,
             &proof,
             &[
-                FloatVar::verifier_input(a_n),
-                FloatVar::verifier_input(a_d),
-                FloatVar::verifier_input(b_n),
-                FloatVar::verifier_input(b_d)
+                FloatVar::input(a_n),
+                FloatVar::input(a_d),
+                FloatVar::input(b_n),
+                FloatVar::input(b_d)
             ]
             .concat()
         )
