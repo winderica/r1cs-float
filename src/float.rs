@@ -341,6 +341,7 @@ impl<F: PrimeField> FloatVar<F> {
             };
 
             let r = p - &q * &w;
+            r.enforce_cmp(&FpVar::zero(), Ordering::Greater, true)?;
             r.enforce_cmp(&w, Ordering::Less, false)?;
 
             let q = &q
