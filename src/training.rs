@@ -10,21 +10,21 @@ use num::ToPrimitive;
 
 #[derive(Clone)]
 pub struct Parameters {
-    l: usize,
+    pub l: usize,
 }
 
 #[derive(Clone)]
 pub struct Statement {
-    a_n: f64,
-    a_d: f64,
-    b_n: f64,
-    b_d: f64,
+    pub a_n: f64,
+    pub a_d: f64,
+    pub b_n: f64,
+    pub b_d: f64,
 }
 
 #[derive(Clone)]
 pub struct Witness {
-    x: Vec<f64>,
-    y: Vec<f64>,
+    pub x: Vec<f64>,
+    pub y: Vec<f64>,
 }
 
 #[derive(Clone)]
@@ -104,7 +104,7 @@ impl<F: PrimeField> ConstraintSynthesizer<F> for TrainingCircuit {
     }
 }
 
-fn train(x: &Vec<f64>, y: &Vec<f64>, l: usize) -> (f64, f64, f64, f64) {
+pub fn train(x: &Vec<f64>, y: &Vec<f64>, l: usize) -> (f64, f64, f64, f64) {
     assert_eq!(x.len(), l);
     assert_eq!(y.len(), l);
 

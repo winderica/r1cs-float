@@ -16,15 +16,15 @@ use ark_relations::{
 
 #[derive(Clone)]
 pub struct Statement {
-    x: f64,
-    y: f64,
-    r: Ordering,
+    pub x: f64,
+    pub y: f64,
+    pub r: Ordering,
 }
 
 #[derive(Clone)]
 pub struct Witness {
-    a: f64,
-    b: f64,
+    pub a: f64,
+    pub b: f64,
 }
 
 #[derive(Clone)]
@@ -77,7 +77,7 @@ impl<F: PrimeField> ConstraintSynthesizer<F> for InferenceCircuit {
     }
 }
 
-fn infer(a: f64, b: f64, x: f64, y: f64) -> Ordering {
+pub fn infer(a: f64, b: f64, x: f64, y: f64) -> Ordering {
     (a * x + b - y).partial_cmp(&0f64).unwrap()
 }
 

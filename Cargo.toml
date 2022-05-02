@@ -13,6 +13,13 @@ ark-groth16 = "^0.3.0"
 rand = { version = "^0.8.0" }
 num = { version = "^0.4.0", features = ["rand"] }
 
+[dev-dependencies]
+criterion = "0.3"
+
+[[bench]]
+name = "bench"
+harness = false
+
 [profile.dev]
 opt-level = 3
 
