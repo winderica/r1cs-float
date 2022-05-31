@@ -10,7 +10,7 @@ use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rand::{thread_rng, Rng};
 use zk_linear_regression::{
-    float::{self, FloatVar},
+    float::FloatVar,
     inference::{self, infer, InferenceCircuit},
     training::{self, train, TrainingCircuit},
 };
@@ -50,6 +50,8 @@ impl<F: PrimeField> ConstraintSynthesizer<F> for Mul {
 }
 
 pub fn add(c: &mut Criterion) {
+    let mut group = c.benchmark_group("add");
+
     let rng = &mut thread_rng();
 
     let params = generate_random_parameters::<Bls12_381, _, _>(
@@ -62,7 +64,7 @@ pub fn add(c: &mut Criterion) {
     )
     .unwrap();
 
-    c.bench_function("add#setup", |b| {
+    group.bench_function("setup", |b| {
         b.iter(|| {
             generate_random_parameters::<Bls12_381, _, _>(
                 Add {
@@ -83,7 +85,7 @@ pub fn add(c: &mut Criterion) {
 
     let proof = create_random_proof(Add { x, y, z }, &params, rng).unwrap();
 
-    c.bench_function("add#prove", |b| {
+    group.bench_function("prove", |b| {
         b.iter(|| {
             create_random_proof(
                 Add {
@@ -97,13 +99,16 @@ pub fn add(c: &mut Criterion) {
         })
     });
 
-    c.bench_function("add#verify", |b| {
+    group.bench_function("verify", |b| {
         let inputs = FloatVar::input(z);
         b.iter(|| verify_proof(&pvk, &proof, black_box(&inputs)))
     });
+    group.finish();
 }
 
 pub fn mul(c: &mut Criterion) {
+    let mut group = c.benchmark_group("mul");
+
     let rng = &mut thread_rng();
 
     let params = generate_random_parameters::<Bls12_381, _, _>(
@@ -116,7 +121,7 @@ pub fn mul(c: &mut Criterion) {
     )
     .unwrap();
 
-    c.bench_function("mul#setup", |b| {
+    group.bench_function("setup", |b| {
         b.iter(|| {
             generate_random_parameters::<Bls12_381, _, _>(
                 Mul {
@@ -137,7 +142,7 @@ pub fn mul(c: &mut Criterion) {
 
     let proof = create_random_proof(Mul { x, y, z }, &params, rng).unwrap();
 
-    c.bench_function("mul#prove", |b| {
+    group.bench_function("prove", |b| {
         b.iter(|| {
             create_random_proof(
                 Mul {
@@ -151,18 +156,21 @@ pub fn mul(c: &mut Criterion) {
         })
     });
 
-    c.bench_function("mul#verify", |b| {
+    group.bench_function("verify", |b| {
         let inputs = FloatVar::input(z);
         b.iter(|| verify_proof(&pvk, &proof, black_box(&inputs)))
     });
+    group.finish();
 }
 
 pub fn inference(c: &mut Criterion) {
+    let mut group = c.benchmark_group("inference");
+
     let rng = &mut thread_rng();
     let params =
         generate_random_parameters::<Bls12_381, _, _>(InferenceCircuit::fake(), rng).unwrap();
 
-    c.bench_function("inference#setup", |b| {
+    group.bench_function("setup", |b| {
         b.iter(|| {
             generate_random_parameters::<Bls12_381, _, _>(black_box(InferenceCircuit::fake()), rng)
         })
@@ -191,7 +199,7 @@ pub fn inference(c: &mut Criterion) {
     )
     .unwrap();
 
-    c.bench_function("inference#prove", |b| {
+    group.bench_function("prove", |b| {
         b.iter(|| {
             create_random_proof(
                 InferenceCircuit {
@@ -212,72 +220,87 @@ pub fn inference(c: &mut Criterion) {
         Ordering::Greater => Fr::one(),
     });
 
-    c.bench_function("inference#verify", |b| {
+    group.bench_function("verify", |b| {
         b.iter(|| verify_proof(&pvk, &proof, black_box(&input)))
     });
+
+    group.finish();
 }
 
 pub fn training(c: &mut Criterion) {
     let rng = &mut thread_rng();
 
-    let l = 10;
+    for (l, r) in [(10, 50), (100, 10)] {
+        let mut group = c.benchmark_group(format!("training ({} points)", l));
+        group.significance_level(0.1).sample_size(r);
 
-    let params =
-        generate_random_parameters::<Bls12_381, _, _>(TrainingCircuit::fake(l), rng).unwrap();
+        let params =
+            generate_random_parameters::<Bls12_381, _, _>(TrainingCircuit::fake(l), rng).unwrap();
 
-    c.bench_function("training#setup", |b| {
-        b.iter(|| {
-            generate_random_parameters::<Bls12_381, _, _>(black_box(TrainingCircuit::fake(l)), rng)
-        })
-    });
+        group.bench_function("setup", |b| {
+            b.iter(|| {
+                generate_random_parameters::<Bls12_381, _, _>(
+                    black_box(TrainingCircuit::fake(l)),
+                    rng,
+                )
+            })
+        });
 
-    let pvk = prepare_verifying_key(&params.vk);
+        let pvk = prepare_verifying_key(&params.vk);
 
-    let x = (0..l).map(|_| rng.gen::<f64>()).collect::<Vec<_>>();
-    let y = (0..l).map(|_| rng.gen::<f64>()).collect::<Vec<_>>();
+        let x = (0..l).map(|_| rng.gen::<f64>()).collect::<Vec<_>>();
+        let y = (0..l).map(|_| rng.gen::<f64>()).collect::<Vec<_>>();
 
-    let (a_n, a_d, b_n, b_d) = train(&x, &y, l);
+        let (a_n, a_d, b_n, b_d) = train(&x, &y, l);
 
-    let proof = create_random_proof(
-        training::TrainingCircuit {
-            pp: training::Parameters { l },
-            s: training::Statement { a_n, a_d, b_n, b_d },
-            w: training::Witness { x: x.clone(), y: y.clone() },
-        },
-        &params,
-        rng,
-    )
-    .unwrap();
-
-    c.bench_function("training#prove", |b| {
-        b.iter(|| {
-            create_random_proof(
-                training::TrainingCircuit {
-                    pp: training::Parameters { l },
-                    s: training::Statement { a_n, a_d, b_n, b_d },
-                    w: training::Witness { x: x.clone(), y: y.clone() },
+        let proof = create_random_proof(
+            training::TrainingCircuit {
+                pp: training::Parameters { l },
+                s: training::Statement { a_n, a_d, b_n, b_d },
+                w: training::Witness {
+                    x: x.clone(),
+                    y: y.clone(),
                 },
-                &params,
-                rng,
-            )
-        })
-    });
+            },
+            &params,
+            rng,
+        )
+        .unwrap();
 
-    c.bench_function("training#verify", |b| {
-        b.iter(|| {
-            verify_proof(
-                &pvk,
-                &proof,
-                &[
-                    FloatVar::input(a_n),
-                    FloatVar::input(a_d),
-                    FloatVar::input(b_n),
-                    FloatVar::input(b_d)
-                ]
-                .concat()
-            )
-        })
-    });
+        group.bench_function("prove", |b| {
+            b.iter(|| {
+                create_random_proof(
+                    training::TrainingCircuit {
+                        pp: training::Parameters { l },
+                        s: training::Statement { a_n, a_d, b_n, b_d },
+                        w: training::Witness {
+                            x: x.clone(),
+                            y: y.clone(),
+                        },
+                    },
+                    &params,
+                    rng,
+                )
+            })
+        });
+
+        group.bench_function("verify", |b| {
+            b.iter(|| {
+                verify_proof(
+                    &pvk,
+                    &proof,
+                    &[
+                        FloatVar::input(a_n),
+                        FloatVar::input(a_d),
+                        FloatVar::input(b_n),
+                        FloatVar::input(b_d),
+                    ]
+                    .concat(),
+                )
+            })
+        });
+        group.finish();
+    }
 }
 
 criterion_group!(benches, add, mul, inference, training);
