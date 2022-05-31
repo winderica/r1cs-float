@@ -6,13 +6,13 @@ use std::{
 };
 
 use crate::utils::{signed_to_field, ToBigUint};
-use ark_ff::{One, PrimeField, Zero};
+use ark_ff::{BigInteger, One, PrimeField, Zero};
 use ark_r1cs_std::{
     alloc::{AllocVar, AllocationMode},
     boolean::Boolean,
     fields::{fp::FpVar, FieldVar},
     prelude::EqGadget,
-    R1CSVar, ToBitsGadget,
+    Assignment, R1CSVar, ToBitsGadget,
 };
 use ark_relations::{
     ns,
@@ -194,7 +194,7 @@ impl_ops!(
 impl<F: PrimeField> FloatVar<F> {
     pub fn equal(x: &Self, y: &Self) -> Result<(), SynthesisError> {
         x.sign.enforce_equal(&y.sign)?;
-        x.exponent.enforce_equal(&y.exponent)?;
+        (&x.exponent * &x.mantissa).enforce_equal(&(&y.exponent * &y.mantissa))?;
         x.mantissa.enforce_equal(&y.mantissa)?;
         Ok(())
     }
@@ -220,13 +220,13 @@ impl<F: PrimeField> FloatVar<F> {
         let exponent = b.select(&y.exponent, &x.exponent)?;
         let delta = &exponent + &exponent - &x.exponent - &y.exponent;
 
-        let max = FpVar::new_constant(cs.clone(), F::from(64u64))?;
-
-        let delta = delta
-            .is_cmp_unchecked(&max, Ordering::Greater, false)?
-            .select(&max, &delta)?;
-
-        let v = two.pow_le(&delta.to_bits_le()?)?;
+        let delta_bits = delta.to_bits_le()?;
+        let t = Boolean::le_bits_to_fp_var(&delta_bits[6..])?.is_zero()?;
+        let v = t.select(
+            &two.pow_le(&delta_bits)?,
+            &FpVar::new_constant(cs.clone(), F::from(1u128 << 64))?,
+        )?;
+        let delta = t.select(&delta, &FpVar::new_constant(cs.clone(), F::from(64u64))?)?;
 
         let xx = &x.sign * &x.mantissa;
         let yy = &y.sign * &y.mantissa;
@@ -320,40 +320,39 @@ impl<F: PrimeField> FloatVar<F> {
     fn mul(x: &Self, y: &Self) -> Result<Self, SynthesisError> {
         let cs = x.cs.clone();
 
-        let v = FpVar::new_constant(cs.clone(), F::from(1u64 << 52))?;
-        let w = v.double()?;
-
         let sign = &x.sign * &y.sign;
-        let (exponent, mantissa) = {
-            let p = &x.mantissa * &y.mantissa;
-            let b = &p.to_bits_le()?[105];
 
-            let p = b.select(&p, &p.double()?)?;
-            let e = &x.exponent + &y.exponent + b.select(&FpVar::one(), &FpVar::zero())?;
+        let p = &x.mantissa * &y.mantissa;
+        let p_bits = match p.value() {
+            Ok(p) => p.into_repr().to_bits_le()[0..106].to_vec(),
+            Err(_) => vec![false; 106],
+        }
+        .iter()
+        .map(|i| Boolean::new_witness(cs.clone(), || Ok(i)).unwrap())
+        .collect::<Vec<_>>();
+        p.enforce_equal(&Boolean::le_bits_to_fp_var(&p_bits)?)?;
 
-            let q = {
-                let q = p.to_biguint() >> 53u8;
+        let b = &p_bits[105];
 
-                FpVar::new_witness(cs.clone(), || match F::BigInt::try_from(q) {
-                    Ok(q) => Ok(F::from_repr(q).unwrap()),
-                    Err(_) => panic!(),
-                })?
-            };
+        let exponent = &x.exponent + &y.exponent + b.select(&FpVar::one(), &FpVar::zero())?;
 
-            let r = p - &q * &w;
-            r.enforce_cmp(&FpVar::zero(), Ordering::Greater, true)?;
-            r.enforce_cmp(&w, Ordering::Less, false)?;
+        let q = b.select(
+            &Boolean::le_bits_to_fp_var(&p_bits[53..106])?,
+            &Boolean::le_bits_to_fp_var(&p_bits[52..105])?,
+        )?;
+        let r = b.select(
+            &Boolean::le_bits_to_fp_var(&p_bits[..53])?,
+            &Boolean::le_bits_to_fp_var(&p_bits[..52])?.double()?,
+        )?;
 
-            let q = &q
-                + r.is_eq(&v)?.select(&q, &(v - r).double()?)?.to_bits_le()?[0]
-                    .select(&FpVar::one(), &FpVar::zero())?;
-
-            (
-                q.is_zero()?
-                    .select(&FpVar::new_constant(cs.clone(), -F::from(1023u64))?, &e)?,
-                q,
-            )
-        };
+        let mantissa = &q
+            + FpVar::from(
+                r.is_eq(&FpVar::new_constant(cs.clone(), F::from(1u64 << 52))?)?
+                    .select(
+                        &b.select(&p_bits[53], &p_bits[52])?,
+                        &b.select(&p_bits[52], &p_bits[51])?,
+                    )?,
+            );
 
         Ok(FloatVar {
             cs,
@@ -368,15 +367,27 @@ impl<F: PrimeField> FloatVar<F> {
 mod tests {
     use std::panic;
 
-    use ark_bls12_381::Bls12_381;
+    use ark_bls12_381::{Bls12_381, Fr};
     use ark_groth16::{
         create_random_proof, generate_random_parameters, prepare_verifying_key, verify_proof,
     };
-    use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef};
+    use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystem, ConstraintSystemRef};
     use ark_std::test_rng;
     use rand::{thread_rng, Rng};
 
     use super::*;
+
+    #[test]
+    fn mul_constraints() {
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        let a = FloatVar::new_witness(cs.clone(), || Ok(0.1)).unwrap();
+        let b = FloatVar::new_witness(cs.clone(), || Ok(0.2)).unwrap();
+
+        a * b;
+
+        println!("{}", cs.num_constraints())
+    }
 
     #[test]
     fn test_add() {
