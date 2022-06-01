@@ -1,24 +1,23 @@
 use std::{
     borrow::Borrow,
-    cmp::Ordering,
     fmt::{Debug, Display},
     ops::Neg,
 };
 
 use crate::utils::{signed_to_field, ToBigUint};
-use ark_ff::{BigInteger, One, PrimeField, Zero};
+use ark_ff::{BigInteger, PrimeField, Zero};
 use ark_r1cs_std::{
     alloc::{AllocVar, AllocationMode},
     boolean::Boolean,
     fields::{fp::FpVar, FieldVar},
     prelude::EqGadget,
-    Assignment, R1CSVar, ToBitsGadget,
+    R1CSVar,
 };
 use ark_relations::{
     ns,
     r1cs::{ConstraintSystemRef, Namespace, SynthesisError},
 };
-use num::{BigUint, Float, ToPrimitive};
+use num::{BigUint, Float};
 
 #[derive(Clone, Debug)]
 pub struct FloatVar<F: PrimeField> {
@@ -297,7 +296,10 @@ impl<F: PrimeField> FloatVar<F> {
 
         let (s_bits, s_ge_0) = Self::to_abs_n_bits(&s, W + 54)?;
 
-        let sign = FpVar::from(s_ge_0).double()? - &one;
+        let sign = x
+            .sign
+            .is_eq(&y.sign)?
+            .select(&x.sign, &(FpVar::from(s_ge_0).double()? - &one))?;
 
         let s = Boolean::le_bits_to_fp_var(&s_bits)?;
 
@@ -405,7 +407,7 @@ mod tests {
         let a = FloatVar::new_witness(cs.clone(), || Ok(0.1)).unwrap();
         let b = FloatVar::new_witness(cs.clone(), || Ok(0.2)).unwrap();
 
-        a + b;
+        let _ = a + b;
 
         assert!(cs.is_satisfied().unwrap());
         println!("{}", cs.num_constraints());
@@ -418,7 +420,7 @@ mod tests {
         let a = FloatVar::new_witness(cs.clone(), || Ok(0.1)).unwrap();
         let b = FloatVar::new_witness(cs.clone(), || Ok(0.2)).unwrap();
 
-        a * b;
+        let _ = a * b;
 
         assert!(cs.is_satisfied().unwrap());
         println!("{}", cs.num_constraints());
@@ -505,6 +507,11 @@ mod tests {
         test(4503599627370496., -0.9999999999999999);
         test(4503599627370496., 1.);
         test(4503599627370496., 4503599627370496.);
+        test(18014398509481984., -3.99999999999999955591079014994);
+        test(0.0, 0.0);
+        test(0.0, -0.0);
+        test(-0.0, 0.0);
+        test(-0.0, -0.0);
     }
 
     #[test]
@@ -588,5 +595,10 @@ mod tests {
         test(4503599627370496., -0.9999999999999999);
         test(4503599627370496., 1.);
         test(4503599627370496., 4503599627370496.);
+        test(18014398509481984., -3.99999999999999955591079014994);
+        test(0.0, 0.0);
+        test(0.0, -0.0);
+        test(-0.0, 0.0);
+        test(-0.0, -0.0);
     }
 }
