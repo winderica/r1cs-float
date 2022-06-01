@@ -199,6 +199,63 @@ impl<F: PrimeField> FloatVar<F> {
         Ok(())
     }
 
+    fn new_bits_variable(
+        cs: ConstraintSystemRef<F>,
+        bits: &[bool],
+        mode: AllocationMode,
+    ) -> Result<Vec<Boolean<F>>, SynthesisError> {
+        bits.iter()
+            .map(|i| Boolean::new_variable(cs.clone(), || Ok(i), mode))
+            .collect::<Result<Vec<_>, _>>()
+    }
+
+    fn new_bits_witness(
+        cs: ConstraintSystemRef<F>,
+        bits: &[bool],
+    ) -> Result<Vec<Boolean<F>>, SynthesisError> {
+        Self::new_bits_variable(cs, bits, AllocationMode::Witness)
+    }
+
+    fn to_n_bits(x: &FpVar<F>, n: usize) -> Result<Vec<Boolean<F>>, SynthesisError> {
+        let cs = x.cs();
+
+        let bits = Self::new_bits_witness(
+            cs,
+            &match x.value() {
+                Ok(x) => x.into_repr().to_bits_le()[..n].to_vec(),
+                Err(_) => vec![false; n],
+            },
+        )?;
+
+        x.enforce_equal(&Boolean::le_bits_to_fp_var(&bits)?)?;
+
+        Ok(bits)
+    }
+
+    fn to_abs_n_bits(
+        x: &FpVar<F>,
+        n: usize,
+    ) -> Result<(Vec<Boolean<F>>, Boolean<F>), SynthesisError> {
+        let cs = x.cs();
+
+        let (abs_bits, is_non_negative) = {
+            let x = x.value().unwrap_or(F::zero());
+            let is_non_negative = x.into_repr() < F::modulus_minus_one_div_two();
+
+            let abs = if is_non_negative { x } else { x.neg() };
+
+            (
+                Self::new_bits_witness(cs.clone(), &abs.into_repr().to_bits_le()[..n])?,
+                Boolean::new_witness(cs.clone(), || Ok(is_non_negative))?,
+            )
+        };
+
+        Boolean::le_bits_to_fp_var(&abs_bits)?
+            .enforce_equal(&is_non_negative.select(x, &x.negate()?)?)?;
+
+        Ok((abs_bits, is_non_negative))
+    }
+
     fn neg(&self) -> Self {
         Self {
             cs: self.cs.clone(),
@@ -209,105 +266,79 @@ impl<F: PrimeField> FloatVar<F> {
     }
 
     fn add(x: &Self, y: &Self) -> Result<Self, SynthesisError> {
+        const W: usize = 54;
+
         let cs = x.cs.clone();
 
-        let two = FpVar::one().double()?;
+        let one = FpVar::one();
+        let two = one.double()?;
+        let two_inv = two.inverse()?;
+        let two_to_53 = FpVar::Constant(F::from(1u128 << 53));
+        let two_to_w = FpVar::Constant(F::from(1u128 << W));
 
-        let b = x
-            .exponent
-            .is_cmp_unchecked(&y.exponent, Ordering::Less, false)?;
+        let (delta_bits, ex_le_ey) = Self::to_abs_n_bits(&(&y.exponent - &x.exponent), 11)?;
 
-        let exponent = b.select(&y.exponent, &x.exponent)?;
-        let delta = &exponent + &exponent - &x.exponent - &y.exponent;
+        let exponent = ex_le_ey.select(&y.exponent, &x.exponent)?;
 
-        let delta_bits = delta.to_bits_le()?;
-        let t = Boolean::le_bits_to_fp_var(&delta_bits[6..])?.is_zero()?;
-        let v = t.select(
-            &two.pow_le(&delta_bits)?,
-            &FpVar::new_constant(cs.clone(), F::from(1u128 << 64))?,
+        let (delta_bits, delta_le_w) = Self::to_abs_n_bits(
+            &(FpVar::Constant(F::from(W as u64)) - Boolean::le_bits_to_fp_var(&delta_bits)?),
+            11,
         )?;
-        let delta = t.select(&delta, &FpVar::new_constant(cs.clone(), F::from(64u64))?)?;
+
+        let two_to_delta = delta_le_w.select(&two.pow_le(&delta_bits)?, &one)?;
 
         let xx = &x.sign * &x.mantissa;
         let yy = &y.sign * &y.mantissa;
+        let zz = ex_le_ey.select(&xx, &yy)?;
+        let ww = &xx + &yy - &zz;
 
-        let unchanged = b.select(&xx, &yy)?;
-        let changed = (&xx + &yy - &unchanged) * &v;
+        let s = zz * two_to_delta + ww * &two_to_w;
+        let is_zero = s.is_zero()?;
 
-        let (sign, exponent, mantissa) = {
-            let sum = changed + unchanged;
+        let (s_bits, s_ge_0) = Self::to_abs_n_bits(&s, W + 54)?;
 
-            let sign = sum
-                .is_cmp_unchecked(&FpVar::zero(), Ordering::Less, false)?
-                .select(&FpVar::one().negate()?, &FpVar::one())?;
-            let sum = sum * &sign;
+        let sign = FpVar::from(s_ge_0).double()? - &one;
 
-            let (q, e) = {
-                let sum = sum.to_biguint();
-                let delta = delta.to_biguint().to_i64().unwrap();
+        let s = Boolean::le_bits_to_fp_var(&s_bits)?;
 
-                let mut normalized = sum.clone();
+        let (new_s_bits, l_bits) = {
+            let mut s_bits = s_bits
+                .iter()
+                .map(|i| i.value().unwrap_or(false))
+                .collect::<Vec<_>>();
 
-                let mut delta_e = 0;
-                if !normalized.is_zero() {
-                    while normalized >= BigUint::one() << (delta + 53) {
-                        delta_e += 1;
-                        normalized >>= 1u8;
-                    }
-                    while normalized < BigUint::one() << (delta + 52) {
-                        delta_e -= 1;
-                        normalized <<= 1u8;
-                    }
-                    normalized >>= delta;
-                } else {
-                    delta_e = match exponent.negate()?.to_biguint().to_i64() {
-                        Some(e) => e,
-                        None => -exponent.to_biguint().to_i64().unwrap(),
-                    } - 1023;
-                }
-                (
-                    FpVar::new_witness(cs.clone(), || match F::BigInt::try_from(normalized) {
-                        Ok(q) => Ok(F::from_repr(q).unwrap()),
-                        Err(_) => panic!(),
-                    })?,
-                    FpVar::new_witness(cs.clone(), || Ok(signed_to_field::<F, _>(delta_e)))?,
-                )
-            };
+            let l = s_bits.iter().rev().position(|&i| i).unwrap_or(0);
 
-            let m = FpVar::new_constant(cs.clone(), F::from(1u64 << 52))?;
-            let n = m.double()?;
+            s_bits.rotate_right(l);
 
-            q.is_zero()?
-                .or(&q.is_cmp(&m, Ordering::Greater, true)?.and(&q.is_cmp(
-                    &n,
-                    Ordering::Less,
-                    false,
-                )?)?)?
-                .enforce_equal(&Boolean::TRUE)?;
-
-            let delta = &delta + &e;
-            let b = delta.is_cmp_unchecked(&FpVar::zero(), Ordering::Greater, false)?;
-
-            let r = b.select(
-                &(&sum - &q * two.pow_le(&delta.to_bits_le()?)?),
-                &FpVar::zero(),
-            )?;
-
-            let u = b.select(
-                &two.pow_le(&(&delta - FpVar::one()).to_bits_le()?)?,
-                &FpVar::one(),
-            )?;
-
-            let q = &q
-                + r.is_eq(&u)?.select(&q, &(u - r).double()?)?.to_bits_le()?[0]
-                    .select(&FpVar::one(), &FpVar::zero())?;
-
-            let overflow = q.is_eq(&n)?;
-            let e = e + overflow.select(&FpVar::one(), &FpVar::zero())?;
-            let q = q * overflow.select(&two.inverse()?, &FpVar::one())?;
-
-            (sign, exponent + e, q)
+            (
+                Self::new_bits_witness(cs.clone(), &s_bits)?,
+                Self::new_bits_witness(cs.clone(), &F::BigInt::from(l as u64).to_bits_le()[..7])?,
+            )
         };
+
+        Boolean::le_bits_to_fp_var(&new_s_bits)?.enforce_equal(&(&s * two.pow_le(&l_bits)?))?;
+
+        new_s_bits
+            .last()
+            .unwrap()
+            .or(&is_zero)?
+            .enforce_equal(&Boolean::TRUE)?;
+
+        let r = Boolean::le_bits_to_fp_var(&new_s_bits[..W + 1])?;
+        let q = Boolean::le_bits_to_fp_var(&new_s_bits[W + 1..])?;
+
+        let is_half = r.is_eq(&two_to_w)?;
+        let q_lsb = &new_s_bits[W + 1];
+        let r_msb = &new_s_bits[W];
+
+        let q = &q + FpVar::from(is_half.select(q_lsb, r_msb)?);
+
+        let is_overflow = q.is_eq(&two_to_53)?;
+
+        let mantissa = q * is_overflow.select(&two_inv, &one)?;
+        let exponent =
+            exponent + one - Boolean::le_bits_to_fp_var(&l_bits)? + FpVar::from(is_overflow);
 
         Ok(FloatVar {
             cs,
@@ -323,36 +354,26 @@ impl<F: PrimeField> FloatVar<F> {
         let sign = &x.sign * &y.sign;
 
         let p = &x.mantissa * &y.mantissa;
-        let p_bits = match p.value() {
-            Ok(p) => p.into_repr().to_bits_le()[0..106].to_vec(),
-            Err(_) => vec![false; 106],
-        }
-        .iter()
-        .map(|i| Boolean::new_witness(cs.clone(), || Ok(i)).unwrap())
-        .collect::<Vec<_>>();
-        p.enforce_equal(&Boolean::le_bits_to_fp_var(&p_bits)?)?;
+        let p_bits = Self::to_n_bits(&p, 106)?;
 
-        let b = &p_bits[105];
+        let p_msb = &p_bits[105];
 
-        let exponent = &x.exponent + &y.exponent + b.select(&FpVar::one(), &FpVar::zero())?;
+        let exponent = &x.exponent + &y.exponent + p_msb.select(&FpVar::one(), &FpVar::zero())?;
 
-        let q = b.select(
+        let q = p_msb.select(
             &Boolean::le_bits_to_fp_var(&p_bits[53..106])?,
             &Boolean::le_bits_to_fp_var(&p_bits[52..105])?,
         )?;
-        let r = b.select(
+        let r = p_msb.select(
             &Boolean::le_bits_to_fp_var(&p_bits[..53])?,
             &Boolean::le_bits_to_fp_var(&p_bits[..52])?.double()?,
         )?;
 
-        let mantissa = &q
-            + FpVar::from(
-                r.is_eq(&FpVar::new_constant(cs.clone(), F::from(1u64 << 52))?)?
-                    .select(
-                        &b.select(&p_bits[53], &p_bits[52])?,
-                        &b.select(&p_bits[52], &p_bits[51])?,
-                    )?,
-            );
+        let is_half = r.is_eq(&FpVar::Constant(F::from(1u64 << 52)))?;
+        let q_lsb = p_msb.select(&p_bits[53], &p_bits[52])?;
+        let r_msb = p_msb.select(&p_bits[52], &p_bits[51])?;
+
+        let mantissa = &q + FpVar::from(is_half.select(&q_lsb, &r_msb)?);
 
         Ok(FloatVar {
             cs,
@@ -378,6 +399,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn add_constraints() {
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        let a = FloatVar::new_witness(cs.clone(), || Ok(0.1)).unwrap();
+        let b = FloatVar::new_witness(cs.clone(), || Ok(0.2)).unwrap();
+
+        a + b;
+
+        assert!(cs.is_satisfied().unwrap());
+        println!("{}", cs.num_constraints());
+    }
+
+    #[test]
     fn mul_constraints() {
         let cs = ConstraintSystem::<Fr>::new_ref();
 
@@ -386,7 +420,8 @@ mod tests {
 
         a * b;
 
-        println!("{}", cs.num_constraints())
+        assert!(cs.is_satisfied().unwrap());
+        println!("{}", cs.num_constraints());
     }
 
     #[test]
