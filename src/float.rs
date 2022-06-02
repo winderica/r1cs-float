@@ -283,13 +283,13 @@ impl<F: PrimeField> FloatVar<F> {
                 .to_bits_le()[..mantissa_bit_length]
                 .to_vec();
 
-            let max_l: BigUint = (exponent.value().unwrap_or(F::zero()) + F::from(1023u64))
+            let max_l: BigUint = (exponent.value().unwrap_or(F::zero()) + F::from(1022u64))
                 .into_repr()
                 .try_into()
                 .unwrap();
 
             let l = cmp::min(
-                max_l.to_usize().unwrap(),
+                max_l.to_usize().unwrap_or(0) + 1,
                 bits.iter().rev().position(|&i| i).unwrap_or(0),
             );
 
@@ -304,15 +304,16 @@ impl<F: PrimeField> FloatVar<F> {
         Boolean::le_bits_to_fp_var(&mantissa_bits)?
             .enforce_equal(&(mantissa * two.pow_le(&l_bits)?))?;
 
-        let exponent = mantissa.is_zero()?.select(
-            &min_exponent,
-            &(exponent + one - Boolean::le_bits_to_fp_var(&l_bits)?),
-        )?;
+        let exponent = exponent + one - Boolean::le_bits_to_fp_var(&l_bits)?;
 
-        mantissa_bits
-            .last()
-            .unwrap()
-            .or(&exponent.is_eq(&min_exponent)?)? // TODO: check this
+        let (_, exponent_underflow) = Self::to_abs_n_bits(&(&min_exponent - &exponent), 11)?;
+
+        let is_subnormal = exponent_underflow.or(&mantissa.is_zero()?)?;
+
+        let exponent = is_subnormal.select(&min_exponent, &exponent)?;
+
+        is_subnormal
+            .or(mantissa_bits.last().unwrap())? // TODO: check this. Malicious prover may cheat.
             .enforce_equal(&Boolean::TRUE)?;
 
         Ok((mantissa_bits, exponent))
@@ -395,7 +396,7 @@ impl<F: PrimeField> FloatVar<F> {
     }
 
     fn mul(x: &Self, y: &Self) -> Result<Self, SynthesisError> {
-        const V: usize = 53;
+        const W: usize = 55;
 
         let cs = x.cs.clone();
 
@@ -403,11 +404,11 @@ impl<F: PrimeField> FloatVar<F> {
 
         let p = &x.mantissa * &y.mantissa;
 
-        let exponent = &x.exponent + &y.exponent + FpVar::Constant(F::from(V as u64));
+        let exponent = &x.exponent + &y.exponent + FpVar::Constant(F::from(W as u64));
 
-        let (p_bits, exponent) = Self::normalize(&p, 106 + V, &exponent)?;
+        let (p_bits, exponent) = Self::normalize(&p, 106 + W, &exponent)?;
 
-        let mantissa = Self::round(&p_bits, 52 + V)?;
+        let mantissa = Self::round(&p_bits, 52 + W)?;
 
         let (mantissa, exponent) = Self::fix_overflow(&mantissa, &exponent)?;
 
@@ -446,7 +447,7 @@ mod tests {
         let a = FloatVar::new_witness(cs.clone(), || Ok(0.1))?;
         let b = FloatVar::new_witness(cs.clone(), || Ok(0.2))?;
 
-        let _ = a + b;
+        println!("{}", a + b);
 
         assert!(cs.is_satisfied()?);
         println!("{}", cs.num_constraints());
@@ -461,7 +462,7 @@ mod tests {
         let a = FloatVar::new_witness(cs.clone(), || Ok(0.1))?;
         let b = FloatVar::new_witness(cs.clone(), || Ok(0.2))?;
 
-        let _ = a * b;
+        println!("{}", a * b);
 
         assert!(cs.is_satisfied()?);
         println!("{}", cs.num_constraints());
@@ -522,9 +523,12 @@ mod tests {
             let a = f64::from_bits(u64::from_str_radix(v[0], 16)?);
             let b = f64::from_bits(u64::from_str_radix(v[1], 16)?);
             let c = f64::from_bits(u64::from_str_radix(v[2], 16)?);
-            if (a.is_normal() || a.is_subnormal())
-                && (b.is_normal() || b.is_subnormal())
-                && (c.is_normal() || c.is_subnormal())
+            if !(a.is_nan()
+                || a.is_infinite()
+                || b.is_nan()
+                || b.is_infinite()
+                || c.is_nan()
+                || c.is_infinite())
             {
                 test(a, b);
             }
@@ -586,9 +590,12 @@ mod tests {
             let a = f64::from_bits(u64::from_str_radix(v[0], 16)?);
             let b = f64::from_bits(u64::from_str_radix(v[1], 16)?);
             let c = f64::from_bits(u64::from_str_radix(v[2], 16)?);
-            if (a.is_normal() || a.is_subnormal())
-                && (b.is_normal() || b.is_subnormal())
-                && (c.is_normal() || c.is_subnormal())
+            if !(a.is_nan()
+                || a.is_infinite()
+                || b.is_nan()
+                || b.is_infinite()
+                || c.is_nan()
+                || c.is_infinite())
             {
                 test(a, b);
             }
