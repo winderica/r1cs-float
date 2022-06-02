@@ -35,6 +35,13 @@ impl<F: PrimeField> Display for FloatVar<F> {
             .into_repr()
             .try_into()
             .unwrap();
+        let m: BigUint = self
+            .mantissa
+            .value()
+            .unwrap_or(F::zero())
+            .into_repr()
+            .try_into()
+            .unwrap();
 
         let s = if self.sign.value().unwrap_or(F::one()).is_one() {
             1
@@ -48,7 +55,7 @@ impl<F: PrimeField> Display for FloatVar<F> {
             &s,
             if e_ge_0 { "" } else { "-" },
             &e,
-            &self.mantissa.value().unwrap_or(F::zero()).into_repr()
+            &m
         )
     }
 }
@@ -202,8 +209,7 @@ impl_ops!(
 impl<F: PrimeField> FloatVar<F> {
     pub fn equal(x: &Self, y: &Self) -> Result<(), SynthesisError> {
         x.sign.enforce_equal(&y.sign)?;
-        // TODO: rewrite this after subnormal numbers are fully supported
-        (&x.exponent * &x.mantissa).enforce_equal(&(&y.exponent * &y.mantissa))?;
+        x.exponent.enforce_equal(&y.exponent)?;
         x.mantissa.enforce_equal(&y.mantissa)?;
         Ok(())
     }
@@ -223,22 +229,6 @@ impl<F: PrimeField> FloatVar<F> {
         bits: &[bool],
     ) -> Result<Vec<Boolean<F>>, SynthesisError> {
         Self::new_bits_variable(cs, bits, AllocationMode::Witness)
-    }
-
-    fn to_n_bits(x: &FpVar<F>, n: usize) -> Result<Vec<Boolean<F>>, SynthesisError> {
-        let cs = x.cs();
-
-        let bits = Self::new_bits_witness(
-            cs,
-            &match x.value() {
-                Ok(x) => x.into_repr().to_bits_le()[..n].to_vec(),
-                Err(_) => vec![false; n],
-            },
-        )?;
-
-        x.enforce_equal(&Boolean::le_bits_to_fp_var(&bits)?)?;
-
-        Ok(bits)
     }
 
     fn to_abs_n_bits(
@@ -274,16 +264,84 @@ impl<F: PrimeField> FloatVar<F> {
         }
     }
 
-    fn fix_overflow(x: &Self) -> Result<Self, SynthesisError> {
-        let one = FpVar::one();
-        let overflow = x.mantissa.is_eq(&FpVar::Constant(F::from(1u128 << 53)))?;
+    fn normalize(
+        mantissa: &FpVar<F>,
+        mantissa_bit_length: usize,
+        exponent: &FpVar<F>,
+    ) -> Result<(Vec<Boolean<F>>, FpVar<F>), SynthesisError> {
+        let cs = mantissa.cs();
 
-        Ok(Self {
-            cs: x.cs.clone(),
-            sign: x.sign.clone(),
-            mantissa: &x.mantissa * overflow.select(&one.double()?.inverse()?, &one)?,
-            exponent: &x.exponent + FpVar::from(overflow),
-        })
+        let one = FpVar::one();
+        let two = one.double()?;
+        let min_exponent = FpVar::Constant(-F::from(1022u64));
+
+        let (mantissa_bits, l_bits) = {
+            let mut bits = mantissa
+                .value()
+                .unwrap_or(F::zero())
+                .into_repr()
+                .to_bits_le()[..mantissa_bit_length]
+                .to_vec();
+
+            let max_l: BigUint = (exponent.value().unwrap_or(F::zero()) + F::from(1023u64))
+                .into_repr()
+                .try_into()
+                .unwrap();
+
+            let l = cmp::min(
+                max_l.to_usize().unwrap(),
+                bits.iter().rev().position(|&i| i).unwrap_or(0),
+            );
+
+            bits.rotate_right(l);
+
+            (
+                Self::new_bits_witness(cs.clone(), &bits)?,
+                Self::new_bits_witness(cs.clone(), &F::BigInt::from(l as u64).to_bits_le()[..7])?,
+            )
+        };
+
+        Boolean::le_bits_to_fp_var(&mantissa_bits)?
+            .enforce_equal(&(mantissa * two.pow_le(&l_bits)?))?;
+
+        let exponent = mantissa.is_zero()?.select(
+            &min_exponent,
+            &(exponent + one - Boolean::le_bits_to_fp_var(&l_bits)?),
+        )?;
+
+        mantissa_bits
+            .last()
+            .unwrap()
+            .or(&exponent.is_eq(&min_exponent)?)? // TODO: check this
+            .enforce_equal(&Boolean::TRUE)?;
+
+        Ok((mantissa_bits, exponent))
+    }
+
+    fn round(mantissa_bits: &[Boolean<F>], w: usize) -> Result<FpVar<F>, SynthesisError> {
+        let q = Boolean::le_bits_to_fp_var(&mantissa_bits[w + 1..])?;
+        let r = Boolean::le_bits_to_fp_var(&mantissa_bits[..w + 1])?;
+
+        let is_half = r.is_eq(&FpVar::Constant(F::from(1u128 << w)))?;
+        let q_lsb = &mantissa_bits[w + 1];
+        let r_msb = &mantissa_bits[w];
+
+        let carry = is_half.select(q_lsb, r_msb)?;
+
+        Ok(q + FpVar::from(carry))
+    }
+
+    fn fix_overflow(
+        mantissa: &FpVar<F>,
+        exponent: &FpVar<F>,
+    ) -> Result<(FpVar<F>, FpVar<F>), SynthesisError> {
+        let one = FpVar::one();
+        let overflow = mantissa.is_eq(&FpVar::Constant(F::from(1u128 << 53)))?;
+
+        Ok((
+            mantissa * overflow.select(&one.double()?.inverse()?, &one)?,
+            exponent + FpVar::from(overflow),
+        ))
     }
 
     fn add(x: &Self, y: &Self) -> Result<Self, SynthesisError> {
@@ -312,103 +370,53 @@ impl<F: PrimeField> FloatVar<F> {
         let ww = &xx + &yy - &zz;
 
         let s = zz * two_to_delta + ww * &two_to_w;
-        let is_zero = s.is_zero()?;
 
         let (s_bits, s_ge_0) = Self::to_abs_n_bits(&s, W + 54)?;
+
+        let s = Boolean::le_bits_to_fp_var(&s_bits)?;
 
         let sign = x
             .sign
             .is_eq(&y.sign)?
             .select(&x.sign, &(FpVar::from(s_ge_0).double()? - &one))?;
 
-        let s = Boolean::le_bits_to_fp_var(&s_bits)?;
+        let (s_bits, exponent) = Self::normalize(&s, W + 54, &exponent)?;
 
-        let (new_s_bits, l_bits) = {
-            let mut s_bits = s_bits
-                .iter()
-                .map(|i| i.value().unwrap_or(false))
-                .collect::<Vec<_>>();
+        let mantissa = Self::round(&s_bits, W)?;
 
-            let max_l: BigUint = (exponent.value().unwrap_or(F::zero()) + F::from(1023u64))
-                .into_repr()
-                .try_into()
-                .unwrap();
+        let (mantissa, exponent) = Self::fix_overflow(&mantissa, &exponent)?;
 
-            let l = cmp::min(
-                max_l.to_usize().unwrap(),
-                s_bits.iter().rev().position(|&i| i).unwrap_or(0),
-            );
-
-            s_bits.rotate_right(l);
-
-            (
-                Self::new_bits_witness(cs.clone(), &s_bits)?,
-                Self::new_bits_witness(cs.clone(), &F::BigInt::from(l as u64).to_bits_le()[..7])?,
-            )
-        };
-
-        Boolean::le_bits_to_fp_var(&new_s_bits)?.enforce_equal(&(&s * two.pow_le(&l_bits)?))?;
-
-        let exponent = is_zero.select(
-            &FpVar::Constant(-F::from(1022u64)),
-            &(exponent + &one - Boolean::le_bits_to_fp_var(&l_bits)?),
-        )?;
-        new_s_bits
-            .last()
-            .unwrap()
-            .or(&exponent.is_eq(&FpVar::Constant(-F::from(1022u64)))?)? // TODO: check this
-            .enforce_equal(&Boolean::TRUE)?;
-
-        let r = Boolean::le_bits_to_fp_var(&new_s_bits[..W + 1])?;
-        let q = Boolean::le_bits_to_fp_var(&new_s_bits[W + 1..])?;
-
-        let is_half = r.is_eq(&two_to_w)?;
-        let q_lsb = &new_s_bits[W + 1];
-        let r_msb = &new_s_bits[W];
-
-        let mantissa = &q + FpVar::from(is_half.select(q_lsb, r_msb)?);
-
-        Ok(Self::fix_overflow(&Self {
+        Ok(Self {
             cs,
             sign,
             exponent,
             mantissa,
-        })?)
+        })
     }
 
     fn mul(x: &Self, y: &Self) -> Result<Self, SynthesisError> {
+        const V: usize = 53;
+
         let cs = x.cs.clone();
 
         let sign = &x.sign * &y.sign;
 
         let p = &x.mantissa * &y.mantissa;
-        let p_bits = Self::to_n_bits(&p, 106)?;
 
-        let p_msb = &p_bits[105];
+        let exponent = &x.exponent + &y.exponent + FpVar::Constant(F::from(V as u64));
 
-        let exponent = &x.exponent + &y.exponent + p_msb.select(&FpVar::one(), &FpVar::zero())?;
+        let (p_bits, exponent) = Self::normalize(&p, 106 + V, &exponent)?;
 
-        let q = p_msb.select(
-            &Boolean::le_bits_to_fp_var(&p_bits[53..106])?,
-            &Boolean::le_bits_to_fp_var(&p_bits[52..105])?,
-        )?;
-        let r = p_msb.select(
-            &Boolean::le_bits_to_fp_var(&p_bits[..53])?,
-            &Boolean::le_bits_to_fp_var(&p_bits[..52])?.double()?,
-        )?;
+        let mantissa = Self::round(&p_bits, 52 + V)?;
 
-        let is_half = r.is_eq(&FpVar::Constant(F::from(1u64 << 52)))?;
-        let q_lsb = p_msb.select(&p_bits[53], &p_bits[52])?;
-        let r_msb = p_msb.select(&p_bits[52], &p_bits[51])?;
+        let (mantissa, exponent) = Self::fix_overflow(&mantissa, &exponent)?;
 
-        let mantissa = &q + FpVar::from(is_half.select(&q_lsb, &r_msb)?);
-
-        Ok(Self::fix_overflow(&Self {
+        Ok(Self {
             cs,
             sign,
             exponent,
             mantissa,
-        })?)
+        })
     }
 }
 
@@ -427,7 +435,7 @@ mod tests {
     };
     use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystem, ConstraintSystemRef};
     use ark_std::test_rng;
-    use rand::{thread_rng};
+    use rand::thread_rng;
 
     use super::*;
 
@@ -578,13 +586,10 @@ mod tests {
             let a = f64::from_bits(u64::from_str_radix(v[0], 16)?);
             let b = f64::from_bits(u64::from_str_radix(v[1], 16)?);
             let c = f64::from_bits(u64::from_str_radix(v[2], 16)?);
-            /*
-             * TODO: support subnormal numbers (including +0/-0).
-             * TODO: fix the bugs where two normal numbers sometimes produce a subnormal number,
-             * which is expected to be a normal one,
-             * e.g., 0.9999999999999999 * 2.2250738585072014E-308
-             */
-            if a.is_normal() && b.is_normal() && c.is_normal() {
+            if (a.is_normal() || a.is_subnormal())
+                && (b.is_normal() || b.is_subnormal())
+                && (c.is_normal() || c.is_subnormal())
+            {
                 test(a, b);
             }
         }
