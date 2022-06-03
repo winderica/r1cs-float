@@ -17,7 +17,7 @@ use ark_relations::{
     ns,
     r1cs::{ConstraintSystemRef, Namespace, SynthesisError},
 };
-use num::{BigUint, ToPrimitive};
+use num::BigUint;
 
 #[derive(Clone, Debug)]
 pub struct FloatVar<F: PrimeField> {
@@ -231,28 +231,38 @@ impl<F: PrimeField> FloatVar<F> {
         Self::new_bits_variable(cs, bits, AllocationMode::Witness)
     }
 
-    fn to_abs_n_bits(
+    fn to_bit_array(x: &FpVar<F>, length: usize) -> Result<Vec<Boolean<F>>, SynthesisError> {
+        let bits = Self::new_bits_witness(
+            x.cs(),
+            &x.value().unwrap_or(F::zero()).into_repr().to_bits_le()[..length],
+        )?;
+
+        Boolean::le_bits_to_fp_var(&bits)?.enforce_equal(&x)?;
+
+        Ok(bits)
+    }
+
+    fn to_abs_bit_array(
         x: &FpVar<F>,
-        n: usize,
+        length: usize,
     ) -> Result<(Vec<Boolean<F>>, Boolean<F>), SynthesisError> {
         let cs = x.cs();
 
-        let (abs_bits, is_non_negative) = {
+        let (abs, x_ge_0) = {
             let x = x.value().unwrap_or(F::zero());
-            let is_non_negative = x.into_repr() < F::modulus_minus_one_div_two();
+            let x_ge_0 = x.into_repr() < F::modulus_minus_one_div_two();
 
-            let abs = if is_non_negative { x } else { x.neg() };
+            let abs = if x_ge_0 { x } else { x.neg() };
 
             (
-                Self::new_bits_witness(cs.clone(), &abs.into_repr().to_bits_le()[..n])?,
-                Boolean::new_witness(cs.clone(), || Ok(is_non_negative))?,
+                Self::new_bits_witness(cs.clone(), &abs.into_repr().to_bits_le()[..length])?,
+                Boolean::new_witness(cs.clone(), || Ok(x_ge_0))?,
             )
         };
 
-        Boolean::le_bits_to_fp_var(&abs_bits)?
-            .enforce_equal(&is_non_negative.select(x, &x.negate()?)?)?;
+        Boolean::le_bits_to_fp_var(&abs)?.enforce_equal(&x_ge_0.select(x, &x.negate()?)?)?;
 
-        Ok((abs_bits, is_non_negative))
+        Ok((abs, x_ge_0))
     }
 
     fn neg(&self) -> Self {
@@ -283,49 +293,52 @@ impl<F: PrimeField> FloatVar<F> {
                 .to_bits_le()[..mantissa_bit_length]
                 .to_vec();
 
-            let max_l: BigUint = (exponent.value().unwrap_or(F::zero()) + F::from(1022u64))
-                .into_repr()
-                .try_into()
-                .unwrap();
-
-            let l = cmp::min(
-                max_l.to_usize().unwrap_or(0) + 1,
-                bits.iter().rev().position(|&i| i).unwrap_or(0),
-            );
+            let l = bits.iter().rev().position(|&i| i).unwrap_or(0);
 
             bits.rotate_right(l);
 
             (
                 Self::new_bits_witness(cs.clone(), &bits)?,
-                Self::new_bits_witness(cs.clone(), &F::BigInt::from(l as u64).to_bits_le()[..7])?,
+                Self::new_bits_witness(cs.clone(), &F::BigInt::from(l as u64).to_bits_le()[..8])?,
             )
         };
 
         Boolean::le_bits_to_fp_var(&mantissa_bits)?
             .enforce_equal(&(mantissa * two.pow_le(&l_bits)?))?;
 
-        let exponent = exponent + one - Boolean::le_bits_to_fp_var(&l_bits)?;
+        let is_zero = mantissa.is_zero()?;
 
-        let (_, exponent_underflow) = Self::to_abs_n_bits(&(&min_exponent - &exponent), 11)?;
-
-        let is_subnormal = exponent_underflow.or(&mantissa.is_zero()?)?;
-
-        let exponent = is_subnormal.select(&min_exponent, &exponent)?;
-
-        is_subnormal
-            .or(mantissa_bits.last().unwrap())? // TODO: check this. Malicious prover may cheat.
+        mantissa_bits
+            .last()
+            .unwrap()
+            .or(&is_zero)?
             .enforce_equal(&Boolean::TRUE)?;
+
+        let l = Boolean::le_bits_to_fp_var(&l_bits)?;
+        let (_, l_le_max) = Self::to_abs_bit_array(&(exponent - &min_exponent - &l), 12)?;
+
+        let (_, e_le_min) = Self::to_abs_bit_array(&(&min_exponent - exponent), 12)?;
+        let exponent = e_le_min.or(&is_zero)?.select(&min_exponent, exponent)?;
+
+        let n = l_le_max.select(&l, &(&exponent - &min_exponent))?;
+        let n_bits = Self::to_bit_array(&n, 8)?;
+
+        let mantissa_bits =
+            Self::to_bit_array(&(mantissa * two.pow_le(&n_bits)?), mantissa_bit_length)?;
+
+        let exponent = exponent - n;
 
         Ok((mantissa_bits, exponent))
     }
 
-    fn round(mantissa_bits: &[Boolean<F>], w: usize) -> Result<FpVar<F>, SynthesisError> {
-        let q = Boolean::le_bits_to_fp_var(&mantissa_bits[w + 1..])?;
-        let r = Boolean::le_bits_to_fp_var(&mantissa_bits[..w + 1])?;
+    fn round(mantissa_bits: &[Boolean<F>]) -> Result<FpVar<F>, SynthesisError> {
+        let w = mantissa_bits.len() - 53;
+        let q = Boolean::le_bits_to_fp_var(&mantissa_bits[w..])?;
+        let r = Boolean::le_bits_to_fp_var(&mantissa_bits[..w])?;
 
-        let is_half = r.is_eq(&FpVar::Constant(F::from(1u128 << w)))?;
-        let q_lsb = &mantissa_bits[w + 1];
-        let r_msb = &mantissa_bits[w];
+        let is_half = r.is_eq(&FpVar::Constant(F::from(1u128 << (w - 1))))?;
+        let q_lsb = &mantissa_bits[w];
+        let r_msb = &mantissa_bits[w - 1];
 
         let carry = is_half.select(q_lsb, r_msb)?;
 
@@ -346,22 +359,21 @@ impl<F: PrimeField> FloatVar<F> {
     }
 
     fn add(x: &Self, y: &Self) -> Result<Self, SynthesisError> {
-        const W: usize = 55;
+        const S_SIZE: usize = 54;
+        const R_SIZE: usize = 55;
+        let one = FpVar::one();
+        let two = FpVar::Constant(F::from(2u64));
+        let r_size = FpVar::Constant(F::from(R_SIZE as u64));
+        let r_max = FpVar::Constant(F::from(1u128 << R_SIZE));
 
         let cs = x.cs.clone();
 
-        let one = FpVar::one();
-        let two = one.double()?;
-        let two_to_w = FpVar::Constant(F::from(1u128 << W));
+        let (delta_bits, ex_le_ey) = Self::to_abs_bit_array(&(&y.exponent - &x.exponent), 11)?;
 
-        let (delta_bits, ex_le_ey) = Self::to_abs_n_bits(&(&y.exponent - &x.exponent), 11)?;
+        let exponent = ex_le_ey.select(&y.exponent, &x.exponent)? + &one;
 
-        let exponent = ex_le_ey.select(&y.exponent, &x.exponent)?;
-
-        let (delta_bits, delta_le_w) = Self::to_abs_n_bits(
-            &(FpVar::Constant(F::from(W as u64)) - Boolean::le_bits_to_fp_var(&delta_bits)?),
-            11,
-        )?;
+        let (delta_bits, delta_le_w) =
+            Self::to_abs_bit_array(&(r_size - Boolean::le_bits_to_fp_var(&delta_bits)?), 11)?;
 
         let two_to_delta = delta_le_w.select(&two.pow_le(&delta_bits)?, &one)?;
 
@@ -370,9 +382,9 @@ impl<F: PrimeField> FloatVar<F> {
         let zz = ex_le_ey.select(&xx, &yy)?;
         let ww = &xx + &yy - &zz;
 
-        let s = zz * two_to_delta + ww * &two_to_w;
+        let s = zz * two_to_delta + ww * &r_max;
 
-        let (s_bits, s_ge_0) = Self::to_abs_n_bits(&s, W + 54)?;
+        let (s_bits, s_ge_0) = Self::to_abs_bit_array(&s, R_SIZE + S_SIZE)?;
 
         let s = Boolean::le_bits_to_fp_var(&s_bits)?;
 
@@ -381,9 +393,9 @@ impl<F: PrimeField> FloatVar<F> {
             .is_eq(&y.sign)?
             .select(&x.sign, &(FpVar::from(s_ge_0).double()? - &one))?;
 
-        let (s_bits, exponent) = Self::normalize(&s, W + 54, &exponent)?;
+        let (s_bits, exponent) = Self::normalize(&s, R_SIZE + S_SIZE, &exponent)?;
 
-        let mantissa = Self::round(&s_bits, W)?;
+        let mantissa = Self::round(&s_bits)?;
 
         let (mantissa, exponent) = Self::fix_overflow(&mantissa, &exponent)?;
 
@@ -396,7 +408,8 @@ impl<F: PrimeField> FloatVar<F> {
     }
 
     fn mul(x: &Self, y: &Self) -> Result<Self, SynthesisError> {
-        const W: usize = 55;
+        const P_SIZE: usize = 106;
+        const R_SIZE: usize = 54;
 
         let cs = x.cs.clone();
 
@@ -404,11 +417,11 @@ impl<F: PrimeField> FloatVar<F> {
 
         let p = &x.mantissa * &y.mantissa;
 
-        let exponent = &x.exponent + &y.exponent + FpVar::Constant(F::from(W as u64));
+        let exponent = &x.exponent + &y.exponent + FpVar::Constant(F::from((R_SIZE + 1) as u64));
 
-        let (p_bits, exponent) = Self::normalize(&p, 106 + W, &exponent)?;
+        let (p_bits, exponent) = Self::normalize(&p, P_SIZE + R_SIZE, &exponent)?;
 
-        let mantissa = Self::round(&p_bits, 52 + W)?;
+        let mantissa = Self::round(&p_bits)?;
 
         let (mantissa, exponent) = Self::fix_overflow(&mantissa, &exponent)?;
 
