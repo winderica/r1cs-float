@@ -285,30 +285,23 @@ impl<F: PrimeField> FloatVar<F> {
         let two = one.double()?;
         let min_exponent = FpVar::Constant(-F::from(1022u64));
 
-        let (mantissa_bits, l_bits) = {
-            let mut bits = mantissa
+        let l_bits = {
+            let l = mantissa
                 .value()
                 .unwrap_or(F::zero())
                 .into_repr()
                 .to_bits_le()[..mantissa_bit_length]
-                .to_vec();
+                .iter()
+                .rev()
+                .position(|&i| i)
+                .unwrap_or(0) as u64;
 
-            let l = bits.iter().rev().position(|&i| i).unwrap_or(0);
-
-            bits.rotate_right(l);
-
-            (
-                Self::new_bits_witness(cs.clone(), &bits)?,
-                Self::new_bits_witness(cs.clone(), &F::BigInt::from(l as u64).to_bits_le()[..8])?,
-            )
+            Self::new_bits_witness(cs.clone(), &F::BigInt::from(l).to_bits_le()[..8])?
         };
-
-        Boolean::le_bits_to_fp_var(&mantissa_bits)?
-            .enforce_equal(&(mantissa * two.pow_le(&l_bits)?))?;
 
         let is_zero = mantissa.is_zero()?;
 
-        mantissa_bits
+        Self::to_bit_array(&(mantissa * two.pow_le(&l_bits)?), mantissa_bit_length)?
             .last()
             .unwrap()
             .or(&is_zero)?
@@ -375,7 +368,7 @@ impl<F: PrimeField> FloatVar<F> {
         let (delta_bits, delta_le_w) =
             Self::to_abs_bit_array(&(r_size - Boolean::le_bits_to_fp_var(&delta_bits)?), 11)?;
 
-        let two_to_delta = delta_le_w.select(&two.pow_le(&delta_bits)?, &one)?;
+        let two_to_delta = delta_le_w.select(&two.pow_le(&delta_bits[..6])?, &one)?;
 
         let xx = &x.sign * &x.mantissa;
         let yy = &y.sign * &y.mantissa;
