@@ -278,7 +278,7 @@ impl<F: PrimeField> FloatVar<F> {
         mantissa: &FpVar<F>,
         mantissa_bit_length: usize,
         exponent: &FpVar<F>,
-    ) -> Result<(Vec<Boolean<F>>, FpVar<F>), SynthesisError> {
+    ) -> Result<(FpVar<F>, FpVar<F>), SynthesisError> {
         let cs = mantissa.cs();
 
         let one = FpVar::one();
@@ -301,41 +301,53 @@ impl<F: PrimeField> FloatVar<F> {
 
         let is_zero = mantissa.is_zero()?;
 
-        Self::to_bit_array(&(mantissa * two.pow_le(&l_bits)?), mantissa_bit_length)?
+        let mantissa_bits =
+            Self::to_bit_array(&(mantissa * two.pow_le(&l_bits)?), mantissa_bit_length)?;
+
+        mantissa_bits
             .last()
             .unwrap()
             .or(&is_zero)?
             .enforce_equal(&Boolean::TRUE)?;
 
         let l = Boolean::le_bits_to_fp_var(&l_bits)?;
-        let (_, l_le_max) = Self::to_abs_bit_array(&(exponent - &min_exponent - &l), 12)?;
+        let (m_bits, l_ge_max) = Self::to_abs_bit_array(&(&l - exponent + &min_exponent), 12)?;
 
-        let (_, e_le_min) = Self::to_abs_bit_array(&(&min_exponent - exponent), 12)?;
-        let exponent = e_le_min.or(&is_zero)?.select(&min_exponent, exponent)?;
+        let mantissa = Boolean::le_bits_to_fp_var(&mantissa_bits)?
+            * l_ge_max.select(&two.pow_le(&m_bits)?.inverse()?, &FpVar::one())?;
 
-        let n = l_le_max.select(&l, &(&exponent - &min_exponent))?;
-        let n_bits = Self::to_bit_array(&n, 8)?;
+        let exponent = is_zero
+            .or(&l_ge_max)?
+            .select(&min_exponent, &(exponent - l))?;
 
-        let mantissa_bits =
-            Self::to_bit_array(&(mantissa * two.pow_le(&n_bits)?), mantissa_bit_length)?;
-
-        let exponent = exponent - n;
-
-        Ok((mantissa_bits, exponent))
+        Ok((mantissa, exponent))
     }
 
-    fn round(mantissa_bits: &[Boolean<F>]) -> Result<FpVar<F>, SynthesisError> {
-        let w = mantissa_bits.len() - 53;
-        let q = Boolean::le_bits_to_fp_var(&mantissa_bits[w..])?;
-        let r = Boolean::le_bits_to_fp_var(&mantissa_bits[..w])?;
+    fn round(mantissa: &FpVar<F>, mantissa_bit_length: usize) -> Result<FpVar<F>, SynthesisError> {
+        let cs = mantissa.cs();
+        let w = mantissa_bit_length - 53;
+
+        let qq = {
+            let mut qq = mantissa.value().unwrap_or(F::one()).into_repr();
+            qq.divn((w + 1) as u32);
+
+            FpVar::new_witness(cs.clone(), || Ok(F::from_repr(qq).unwrap()))?
+        };
+
+        let rr = mantissa - &qq * FpVar::Constant(F::from(1u128 << (w + 1)));
+        let rr_bits = Self::to_bit_array(&rr, w + 1)?;
+
+        let q_lsb = FpVar::from(rr_bits[w].clone());
+        let r_msb = FpVar::from(rr_bits[w - 1].clone());
+
+        let q = qq.double()? + &q_lsb;
+        let r = Boolean::le_bits_to_fp_var(&rr_bits[..w])?;
 
         let is_half = r.is_eq(&FpVar::Constant(F::from(1u128 << (w - 1))))?;
-        let q_lsb = &mantissa_bits[w];
-        let r_msb = &mantissa_bits[w - 1];
 
-        let carry = is_half.select(q_lsb, r_msb)?;
+        let carry = is_half.select(&q_lsb, &r_msb)?;
 
-        Ok(q + FpVar::from(carry))
+        Ok(q + carry)
     }
 
     fn fix_overflow(
@@ -386,9 +398,9 @@ impl<F: PrimeField> FloatVar<F> {
             .is_eq(&y.sign)?
             .select(&x.sign, &(FpVar::from(s_ge_0).double()? - &one))?;
 
-        let (s_bits, exponent) = Self::normalize(&s, R_SIZE + S_SIZE, &exponent)?;
+        let (s, exponent) = Self::normalize(&s, R_SIZE + S_SIZE, &exponent)?;
 
-        let mantissa = Self::round(&s_bits)?;
+        let mantissa = Self::round(&s, R_SIZE + S_SIZE)?;
 
         let (mantissa, exponent) = Self::fix_overflow(&mantissa, &exponent)?;
 
@@ -403,6 +415,7 @@ impl<F: PrimeField> FloatVar<F> {
     fn mul(x: &Self, y: &Self) -> Result<Self, SynthesisError> {
         const P_SIZE: usize = 106;
         const R_SIZE: usize = 54;
+        let min_exponent = FpVar::Constant(-F::from(1022u64));
 
         let cs = x.cs.clone();
 
@@ -412,9 +425,12 @@ impl<F: PrimeField> FloatVar<F> {
 
         let exponent = &x.exponent + &y.exponent + FpVar::Constant(F::from((R_SIZE + 1) as u64));
 
-        let (p_bits, exponent) = Self::normalize(&p, P_SIZE + R_SIZE, &exponent)?;
+        let (_, e_le_min) = Self::to_abs_bit_array(&(&min_exponent - &exponent), 12)?;
+        let exponent = e_le_min.select(&min_exponent, &exponent)?;
 
-        let mantissa = Self::round(&p_bits)?;
+        let (p, exponent) = Self::normalize(&p, P_SIZE + R_SIZE, &exponent)?;
+
+        let mantissa = Self::round(&p, P_SIZE + R_SIZE)?;
 
         let (mantissa, exponent) = Self::fix_overflow(&mantissa, &exponent)?;
 
