@@ -5,7 +5,7 @@ use std::{
     ops::Neg,
 };
 
-use ark_ff::{BigInteger, PrimeField, One};
+use ark_ff::{BigInteger, One, PrimeField};
 use ark_r1cs_std::{
     alloc::{AllocVar, AllocationMode},
     boolean::Boolean,
@@ -502,12 +502,9 @@ mod tests {
         io::{BufRead, BufReader},
     };
 
-    use ark_bls12_381::{Bls12_381, Fr};
-    use ark_groth16::{
-        create_random_proof, generate_random_parameters, prepare_verifying_key, verify_proof,
-    };
-    use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystem, ConstraintSystemRef};
-    use rand::thread_rng;
+    use ark_bls12_381::Fr;
+    use ark_relations::r1cs::ConstraintSystem;
+    use rayon::prelude::*;
 
     use super::*;
 
@@ -571,115 +568,56 @@ mod tests {
         Ok(())
     }
 
-    fn binary_op_tester<C: ConstraintSynthesizer<Fr> + Default>(
+    fn test_binary_op(
         test_data: File,
-        circuit: fn(f64, f64, f64) -> C,
+        op: fn(F64Var<Fr>, F64Var<Fr>) -> F64Var<Fr>,
     ) -> Result<(), Box<dyn Error>> {
-        let rng = &mut thread_rng();
+        let r = BufReader::new(test_data)
+            .lines()
+            .collect::<Result<Vec<_>, _>>()?
+            .par_iter()
+            .map(|line| {
+                line.split(' ')
+                    .take(3)
+                    .map(|i| u64::from_str_radix(i, 16).map(f64::from_bits))
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap()
+            })
+            .filter(|v| v.iter().find(|i| i.is_nan() || i.is_infinite()).is_none())
+            .filter(|v| {
+                let cs = ConstraintSystem::<Fr>::new_ref();
+                let a = F64Var::new_witness(cs.clone(), || Ok(v[0])).unwrap();
+                let b = F64Var::new_witness(cs.clone(), || Ok(v[1])).unwrap();
+                let c = F64Var::new_input(cs.clone(), || Ok(v[2])).unwrap();
 
-        let params = generate_random_parameters(C::default(), rng)?;
-        let pvk = prepare_verifying_key::<Bls12_381>(&params.vk);
+                F64Var::enforce_equal(&op(a, b), &c).unwrap();
 
-        for line in BufReader::new(test_data).lines() {
-            let v = line?
-                .split(' ')
-                .map(|i| u64::from_str_radix(i, 16).map(f64::from_bits))
-                .collect::<Result<Vec<_>, _>>()?;
-            if v.iter()
-                .take(3)
-                .find(|i| i.is_nan() || i.is_infinite())
-                .is_none()
-            {
-                let proof = create_random_proof(circuit(v[0], v[1], v[2]), &params, rng)?;
-                let is_valid = verify_proof(&pvk, &proof, &F64Var::input(v[2]));
-                assert!(is_valid.is_ok() && is_valid.unwrap(), "{} {}", v[0], v[1]);
-            }
-        }
+                !cs.is_satisfied().unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(r.len(), 0, "{:#?}", r);
 
         Ok(())
     }
 
     #[test]
     fn test_add() -> Result<(), Box<dyn Error>> {
-        #[derive(Default)]
-        pub struct Circuit(f64, f64, f64);
-
-        impl<F: PrimeField> ConstraintSynthesizer<F> for Circuit {
-            fn generate_constraints(
-                self,
-                cs: ConstraintSystemRef<F>,
-            ) -> Result<(), SynthesisError> {
-                let a = F64Var::new_witness(cs.clone(), || Ok(self.0))?;
-                let b = F64Var::new_witness(cs.clone(), || Ok(self.1))?;
-                let c = F64Var::new_input(cs.clone(), || Ok(self.2))?;
-
-                F64Var::enforce_equal(&(a + b), &c)
-            }
-        }
-
-        binary_op_tester(File::open("data/add")?, |a, b, c| Circuit(a, b, c))
+        test_binary_op(File::open("data/add")?, std::ops::Add::add)
     }
 
     #[test]
     fn test_sub() -> Result<(), Box<dyn Error>> {
-        #[derive(Default)]
-        pub struct Circuit(f64, f64, f64);
-
-        impl<F: PrimeField> ConstraintSynthesizer<F> for Circuit {
-            fn generate_constraints(
-                self,
-                cs: ConstraintSystemRef<F>,
-            ) -> Result<(), SynthesisError> {
-                let a = F64Var::new_witness(cs.clone(), || Ok(self.0))?;
-                let b = F64Var::new_witness(cs.clone(), || Ok(self.1))?;
-                let c = F64Var::new_input(cs.clone(), || Ok(self.2))?;
-
-                F64Var::enforce_equal(&(a - b), &c)
-            }
-        }
-
-        binary_op_tester(File::open("data/sub")?, |a, b, c| Circuit(a, b, c))
+        test_binary_op(File::open("data/sub")?, std::ops::Sub::sub)
     }
 
     #[test]
     fn test_mul() -> Result<(), Box<dyn Error>> {
-        #[derive(Default)]
-        pub struct Circuit(f64, f64, f64);
-
-        impl<F: PrimeField> ConstraintSynthesizer<F> for Circuit {
-            fn generate_constraints(
-                self,
-                cs: ConstraintSystemRef<F>,
-            ) -> Result<(), SynthesisError> {
-                let a = F64Var::new_witness(cs.clone(), || Ok(self.0))?;
-                let b = F64Var::new_witness(cs.clone(), || Ok(self.1))?;
-                let c = F64Var::new_input(cs.clone(), || Ok(self.2))?;
-
-                F64Var::enforce_equal(&(a * b), &c)
-            }
-        }
-
-        binary_op_tester(File::open("data/mul")?, |a, b, c| Circuit(a, b, c))
+        test_binary_op(File::open("data/mul")?, std::ops::Mul::mul)
     }
 
     #[test]
     fn test_div() -> Result<(), Box<dyn Error>> {
-        #[derive(Default)]
-        pub struct Circuit(f64, f64, f64);
-
-        impl<F: PrimeField> ConstraintSynthesizer<F> for Circuit {
-            fn generate_constraints(
-                self,
-                cs: ConstraintSystemRef<F>,
-            ) -> Result<(), SynthesisError> {
-                let a = F64Var::new_witness(cs.clone(), || Ok(self.0))?;
-                let b = F64Var::new_witness(cs.clone(), || Ok(self.1))?;
-                let c = F64Var::new_input(cs.clone(), || Ok(self.2))?;
-
-                F64Var::enforce_equal(&(a / b), &c)
-            }
-        }
-
-        binary_op_tester(File::open("data/div")?, |a, b, c| Circuit(a, b, c))
+        test_binary_op(File::open("data/div")?, std::ops::Div::div)
     }
 }
