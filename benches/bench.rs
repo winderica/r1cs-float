@@ -1,18 +1,15 @@
-use std::cmp::Ordering;
-
-use ark_bls12_381::{Bls12_381, Fr};
-use ark_ff::{One, PrimeField, Zero};
+use ark_bls12_381::Bls12_381;
+use ark_ff::PrimeField;
 use ark_groth16::{
     create_random_proof, generate_random_parameters, prepare_verifying_key, verify_proof,
 };
 use ark_r1cs_std::alloc::AllocVar;
+use ark_r1cs_std::eq::EqGadget;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rand::{thread_rng, Rng};
-use zk_linear_regression::{
-    float::FloatVar,
-    inference::{self, infer, InferenceCircuit},
-    training::{self, train, TrainingCircuit},
+use r1cs_float::{
+    f64::F64Var,
 };
 
 pub struct Add {
@@ -29,22 +26,22 @@ pub struct Mul {
 
 impl<F: PrimeField> ConstraintSynthesizer<F> for Add {
     fn generate_constraints(self, cs: ConstraintSystemRef<F>) -> ark_relations::r1cs::Result<()> {
-        let x = FloatVar::new_witness(cs.clone(), || Ok(self.x))?;
-        let y = FloatVar::new_witness(cs.clone(), || Ok(self.y))?;
-        let z = FloatVar::new_input(cs.clone(), || Ok(self.z))?;
+        let x = F64Var::new_witness(cs.clone(), || Ok(self.x))?;
+        let y = F64Var::new_witness(cs.clone(), || Ok(self.y))?;
+        let z = F64Var::new_input(cs.clone(), || Ok(self.z))?;
 
-        FloatVar::equal(&(x + y), &z)?;
+        F64Var::enforce_equal(&(x + y), &z)?;
         Ok(())
     }
 }
 
 impl<F: PrimeField> ConstraintSynthesizer<F> for Mul {
     fn generate_constraints(self, cs: ConstraintSystemRef<F>) -> ark_relations::r1cs::Result<()> {
-        let x = FloatVar::new_witness(cs.clone(), || Ok(self.x))?;
-        let y = FloatVar::new_witness(cs.clone(), || Ok(self.y))?;
-        let z = FloatVar::new_input(cs.clone(), || Ok(self.z))?;
+        let x = F64Var::new_witness(cs.clone(), || Ok(self.x))?;
+        let y = F64Var::new_witness(cs.clone(), || Ok(self.y))?;
+        let z = F64Var::new_input(cs.clone(), || Ok(self.z))?;
 
-        FloatVar::equal(&(x * y), &z)?;
+        F64Var::enforce_equal(&(x * y), &z)?;
         Ok(())
     }
 }
@@ -100,7 +97,7 @@ pub fn add(c: &mut Criterion) {
     });
 
     group.bench_function("verify", |b| {
-        let inputs = FloatVar::input(z);
+        let inputs = F64Var::input(z);
         b.iter(|| verify_proof(&pvk, &proof, black_box(&inputs)))
     });
     group.finish();
@@ -157,151 +154,11 @@ pub fn mul(c: &mut Criterion) {
     });
 
     group.bench_function("verify", |b| {
-        let inputs = FloatVar::input(z);
+        let inputs = F64Var::input(z);
         b.iter(|| verify_proof(&pvk, &proof, black_box(&inputs)))
     });
     group.finish();
 }
 
-pub fn inference(c: &mut Criterion) {
-    let mut group = c.benchmark_group("inference");
-
-    let rng = &mut thread_rng();
-    let params =
-        generate_random_parameters::<Bls12_381, _, _>(InferenceCircuit::fake(), rng).unwrap();
-
-    group.bench_function("setup", |b| {
-        b.iter(|| {
-            generate_random_parameters::<Bls12_381, _, _>(black_box(InferenceCircuit::fake()), rng)
-        })
-    });
-
-    let pvk = prepare_verifying_key(&params.vk);
-
-    let a = rng.gen::<f64>();
-    let b = rng.gen::<f64>();
-    let x = rng.gen::<f64>();
-    let y = rng.gen::<f64>();
-
-    let w = inference::Witness { a, b };
-
-    let r = infer(a, b, x, y);
-
-    let s = inference::Statement { x, y, r };
-
-    let proof = create_random_proof(
-        InferenceCircuit {
-            s: s.clone(),
-            w: w.clone(),
-        },
-        &params,
-        rng,
-    )
-    .unwrap();
-
-    group.bench_function("prove", |b| {
-        b.iter(|| {
-            create_random_proof(
-                InferenceCircuit {
-                    s: black_box(s.clone()),
-                    w: black_box(w.clone()),
-                },
-                &params,
-                rng,
-            )
-        })
-    });
-
-    let mut input = [FloatVar::input(x), FloatVar::input(y)].concat();
-
-    input.push(match r {
-        Ordering::Less => -Fr::one(),
-        Ordering::Equal => Fr::zero(),
-        Ordering::Greater => Fr::one(),
-    });
-
-    group.bench_function("verify", |b| {
-        b.iter(|| verify_proof(&pvk, &proof, black_box(&input)))
-    });
-
-    group.finish();
-}
-
-pub fn training(c: &mut Criterion) {
-    let rng = &mut thread_rng();
-
-    for (l, r) in [(10, 50), (100, 10)] {
-        let mut group = c.benchmark_group(format!("training ({} points)", l));
-        group.significance_level(0.1).sample_size(r);
-
-        let params =
-            generate_random_parameters::<Bls12_381, _, _>(TrainingCircuit::fake(l), rng).unwrap();
-
-        group.bench_function("setup", |b| {
-            b.iter(|| {
-                generate_random_parameters::<Bls12_381, _, _>(
-                    black_box(TrainingCircuit::fake(l)),
-                    rng,
-                )
-            })
-        });
-
-        let pvk = prepare_verifying_key(&params.vk);
-
-        let x = (0..l).map(|_| rng.gen::<f64>()).collect::<Vec<_>>();
-        let y = (0..l).map(|_| rng.gen::<f64>()).collect::<Vec<_>>();
-
-        let (a_n, a_d, b_n, b_d) = train(&x, &y, l);
-
-        let proof = create_random_proof(
-            training::TrainingCircuit {
-                pp: training::Parameters { l },
-                s: training::Statement { a_n, a_d, b_n, b_d },
-                w: training::Witness {
-                    x: x.clone(),
-                    y: y.clone(),
-                },
-            },
-            &params,
-            rng,
-        )
-        .unwrap();
-
-        group.bench_function("prove", |b| {
-            b.iter(|| {
-                create_random_proof(
-                    training::TrainingCircuit {
-                        pp: training::Parameters { l },
-                        s: training::Statement { a_n, a_d, b_n, b_d },
-                        w: training::Witness {
-                            x: x.clone(),
-                            y: y.clone(),
-                        },
-                    },
-                    &params,
-                    rng,
-                )
-            })
-        });
-
-        group.bench_function("verify", |b| {
-            b.iter(|| {
-                verify_proof(
-                    &pvk,
-                    &proof,
-                    &[
-                        FloatVar::input(a_n),
-                        FloatVar::input(a_d),
-                        FloatVar::input(b_n),
-                        FloatVar::input(b_d),
-                    ]
-                    .concat(),
-                )
-            })
-        });
-        group.finish();
-    }
-}
-
-criterion_group!(benches, add, mul, inference, training);
+criterion_group!(benches, add, mul);
 criterion_main!(benches);

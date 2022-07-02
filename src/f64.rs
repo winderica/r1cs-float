@@ -5,7 +5,7 @@ use std::{
     ops::Neg,
 };
 
-use ark_ff::{BigInteger, PrimeField};
+use ark_ff::{BigInteger, PrimeField, One};
 use ark_r1cs_std::{
     alloc::{AllocVar, AllocationMode},
     boolean::Boolean,
@@ -20,14 +20,14 @@ use ark_relations::{
 use num::BigUint;
 
 #[derive(Clone, Debug)]
-pub struct FloatVar<F: PrimeField> {
+pub struct F64Var<F: PrimeField> {
     cs: ConstraintSystemRef<F>,
     pub sign: FpVar<F>,
     pub exponent: FpVar<F>,
     pub mantissa: FpVar<F>,
 }
 
-impl<F: PrimeField> Display for FloatVar<F> {
+impl<F: PrimeField> Display for F64Var<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let e = self.exponent.value().unwrap_or(F::zero());
         let e_ge_0 = e.into_repr() < F::modulus_minus_one_div_two();
@@ -38,7 +38,7 @@ impl<F: PrimeField> Display for FloatVar<F> {
         let m: BigUint = self
             .mantissa
             .value()
-            .unwrap_or(F::zero())
+            .unwrap_or_default()
             .into_repr()
             .try_into()
             .unwrap();
@@ -51,7 +51,7 @@ impl<F: PrimeField> Display for FloatVar<F> {
 
         write!(
             f,
-            "Sign: {}\nExponent: {}{}\nMantissa: {}\n",
+            "Sign: {}\nExponent: {}{}\nMantissa: {}",
             &s,
             if e_ge_0 { "" } else { "-" },
             &e,
@@ -60,7 +60,7 @@ impl<F: PrimeField> Display for FloatVar<F> {
     }
 }
 
-impl<F: PrimeField> FloatVar<F> {
+impl<F: PrimeField> F64Var<F> {
     pub fn input(i: f64) -> [F; 3] {
         let i = i.to_bits();
         let sign = i >> 63;
@@ -78,7 +78,7 @@ impl<F: PrimeField> FloatVar<F> {
     }
 }
 
-impl<F: PrimeField> AllocVar<f64, F> for FloatVar<F> {
+impl<F: PrimeField> AllocVar<f64, F> for F64Var<F> {
     fn new_variable<T: Borrow<f64>>(
         cs: impl Into<Namespace<F>>,
         f: impl FnOnce() -> Result<T, SynthesisError>,
@@ -160,7 +160,7 @@ macro_rules! impl_ops {
     };
 }
 
-impl<F: PrimeField> Neg for FloatVar<F> {
+impl<F: PrimeField> Neg for F64Var<F> {
     type Output = Self;
 
     fn neg(self) -> Self::Output {
@@ -168,52 +168,64 @@ impl<F: PrimeField> Neg for FloatVar<F> {
     }
 }
 
-impl<F: PrimeField> Neg for &FloatVar<F> {
-    type Output = FloatVar<F>;
+impl<F: PrimeField> Neg for &F64Var<F> {
+    type Output = F64Var<F>;
 
     fn neg(self) -> Self::Output {
-        FloatVar::<F>::neg(self)
+        F64Var::<F>::neg(self)
     }
 }
 
 impl_ops!(
-    FloatVar<F>,
+    F64Var<F>,
     Add,
     add,
     AddAssign,
     add_assign,
-    |a, b| { FloatVar::<F>::add(a, b).unwrap() },
+    |a, b| { F64Var::<F>::add(a, b).unwrap() },
     F: PrimeField,
 );
 
 impl_ops!(
-    FloatVar<F>,
+    F64Var<F>,
     Sub,
     sub,
     SubAssign,
     sub_assign,
-    |a, b: &'a FloatVar<F>| { FloatVar::<F>::add(a, &-b).unwrap() },
+    |a, b: &'a F64Var<F>| { F64Var::<F>::add(a, &-b).unwrap() },
     F: PrimeField,
 );
 
 impl_ops!(
-    FloatVar<F>,
+    F64Var<F>,
     Mul,
     mul,
     MulAssign,
     mul_assign,
-    |a, b| { FloatVar::<F>::mul(a, b).unwrap() },
+    |a, b| { F64Var::<F>::mul(a, b).unwrap() },
     F: PrimeField,
 );
 
-impl<F: PrimeField> FloatVar<F> {
-    pub fn equal(x: &Self, y: &Self) -> Result<(), SynthesisError> {
-        x.sign.enforce_equal(&y.sign)?;
-        x.exponent.enforce_equal(&y.exponent)?;
-        x.mantissa.enforce_equal(&y.mantissa)?;
-        Ok(())
-    }
+impl_ops!(
+    F64Var<F>,
+    Div,
+    div,
+    DivAssign,
+    div_assign,
+    |a, b| { F64Var::<F>::div(a, b).unwrap() },
+    F: PrimeField,
+);
 
+impl<F: PrimeField> EqGadget<F> for F64Var<F> {
+    fn is_eq(&self, other: &Self) -> Result<Boolean<F>, SynthesisError> {
+        Boolean::TRUE
+            .and(&self.sign.is_eq(&other.sign)?)?
+            .and(&self.exponent.is_eq(&other.exponent)?)?
+            .and(&self.mantissa.is_eq(&other.mantissa)?)
+    }
+}
+
+impl<F: PrimeField> F64Var<F> {
     fn new_bits_variable(
         cs: ConstraintSystemRef<F>,
         bits: &[bool],
@@ -234,7 +246,7 @@ impl<F: PrimeField> FloatVar<F> {
     fn to_bit_array(x: &FpVar<F>, length: usize) -> Result<Vec<Boolean<F>>, SynthesisError> {
         let bits = Self::new_bits_witness(
             x.cs(),
-            &x.value().unwrap_or(F::zero()).into_repr().to_bits_le()[..length],
+            &x.value().unwrap_or_default().into_repr().to_bits_le()[..length],
         )?;
 
         Boolean::le_bits_to_fp_var(&bits)?.enforce_equal(&x)?;
@@ -249,7 +261,7 @@ impl<F: PrimeField> FloatVar<F> {
         let cs = x.cs();
 
         let (abs, x_ge_0) = {
-            let x = x.value().unwrap_or(F::zero());
+            let x = x.value().unwrap_or_default();
             let x_ge_0 = x.into_repr() < F::modulus_minus_one_div_two();
 
             let abs = if x_ge_0 { x } else { x.neg() };
@@ -288,7 +300,7 @@ impl<F: PrimeField> FloatVar<F> {
         let l_bits = {
             let l = mantissa
                 .value()
-                .unwrap_or(F::zero())
+                .unwrap_or_default()
                 .into_repr()
                 .to_bits_le()[..mantissa_bit_length]
                 .iter()
@@ -296,8 +308,11 @@ impl<F: PrimeField> FloatVar<F> {
                 .position(|&i| i)
                 .unwrap_or(0) as u64;
 
-            Self::new_bits_witness(cs.clone(), &F::BigInt::from(l).to_bits_le()[..8])?
+            let l_bit_length = (usize::BITS - mantissa_bit_length.leading_zeros()) as usize;
+
+            Self::new_bits_witness(cs.clone(), &F::BigInt::from(l).to_bits_le()[..l_bit_length])?
         };
+        let l = Boolean::le_bits_to_fp_var(&l_bits)?;
 
         let is_zero = mantissa.is_zero()?;
 
@@ -310,11 +325,10 @@ impl<F: PrimeField> FloatVar<F> {
             .or(&is_zero)?
             .enforce_equal(&Boolean::TRUE)?;
 
-        let l = Boolean::le_bits_to_fp_var(&l_bits)?;
         let (m_bits, l_ge_max) = Self::to_abs_bit_array(&(&l - exponent + &min_exponent), 12)?;
 
         let mantissa = Boolean::le_bits_to_fp_var(&mantissa_bits)?
-            * l_ge_max.select(&two.pow_le(&m_bits)?.inverse()?, &FpVar::one())?;
+            * l_ge_max.select(&two.inverse()?.pow_le(&m_bits)?, &FpVar::one())?;
 
         let exponent = is_zero
             .or(&l_ge_max)?
@@ -328,13 +342,13 @@ impl<F: PrimeField> FloatVar<F> {
         let w = mantissa_bit_length - 53;
 
         let qq = {
-            let mut qq = mantissa.value().unwrap_or(F::one()).into_repr();
+            let mut qq = mantissa.value().unwrap_or_default().into_repr();
             qq.divn((w + 1) as u32);
 
             FpVar::new_witness(cs.clone(), || Ok(F::from_repr(qq).unwrap()))?
         };
 
-        let rr = mantissa - &qq * FpVar::Constant(F::from(1u128 << (w + 1)));
+        let rr = mantissa - &qq * FpVar::Constant(F::from(BigUint::one() << (w + 1)));
         let rr_bits = Self::to_bit_array(&rr, w + 1)?;
 
         let q_lsb = FpVar::from(rr_bits[w].clone());
@@ -343,7 +357,7 @@ impl<F: PrimeField> FloatVar<F> {
         let q = qq.double()? + &q_lsb;
         let r = Boolean::le_bits_to_fp_var(&rr_bits[..w])?;
 
-        let is_half = r.is_eq(&FpVar::Constant(F::from(1u128 << (w - 1))))?;
+        let is_half = r.is_eq(&FpVar::Constant(F::from(BigUint::one() << (w - 1))))?;
 
         let carry = is_half.select(&q_lsb, &r_msb)?;
 
@@ -441,6 +455,43 @@ impl<F: PrimeField> FloatVar<F> {
             mantissa,
         })
     }
+
+    fn div(x: &Self, y: &Self) -> Result<Self, SynthesisError> {
+        const Q_SIZE: usize = 159;
+        const R_SIZE: usize = 55;
+        let min_exponent = FpVar::Constant(-F::from(1022u64));
+
+        let cs = x.cs.clone();
+
+        let sign = &x.sign * &y.sign;
+
+        let q = {
+            let x: BigUint = x.mantissa.value().unwrap_or(F::zero()).into_repr().into();
+            let y: BigUint = y.mantissa.value().unwrap_or(F::zero()).into_repr().into();
+            FpVar::new_witness(cs.clone(), || Ok(F::from((x << Q_SIZE) / y)))?
+        };
+        let r = &x.mantissa * FpVar::Constant(F::from(2u8).pow([Q_SIZE as u64])) - &q * &y.mantissa;
+        Self::to_bit_array(&r, 53)?;
+        Self::to_bit_array(&(&y.mantissa - &r - FpVar::one()), 53)?;
+
+        let exponent = &x.exponent - &y.exponent + FpVar::Constant(F::from((R_SIZE - 1) as u64));
+
+        let (_, e_le_min) = Self::to_abs_bit_array(&(&min_exponent - &exponent), 12)?;
+        let exponent = e_le_min.select(&min_exponent, &exponent)?;
+
+        let (q, exponent) = Self::normalize(&q, Q_SIZE + R_SIZE, &exponent)?;
+
+        let mantissa = Self::round(&q, Q_SIZE + R_SIZE)?;
+
+        let (mantissa, exponent) = Self::fix_overflow(&mantissa, &exponent)?;
+
+        Ok(Self {
+            cs,
+            sign,
+            exponent,
+            mantissa,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -449,7 +500,6 @@ mod tests {
         error::Error,
         fs::File,
         io::{BufRead, BufReader},
-        panic,
     };
 
     use ark_bls12_381::{Bls12_381, Fr};
@@ -457,7 +507,6 @@ mod tests {
         create_random_proof, generate_random_parameters, prepare_verifying_key, verify_proof,
     };
     use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystem, ConstraintSystemRef};
-    use ark_std::test_rng;
     use rand::thread_rng;
 
     use super::*;
@@ -466,10 +515,25 @@ mod tests {
     fn add_constraints() -> Result<(), Box<dyn Error>> {
         let cs = ConstraintSystem::<Fr>::new_ref();
 
-        let a = FloatVar::new_witness(cs.clone(), || Ok(0.1))?;
-        let b = FloatVar::new_witness(cs.clone(), || Ok(0.2))?;
+        let a = F64Var::new_witness(cs.clone(), || Ok(0.1))?;
+        let b = F64Var::new_witness(cs.clone(), || Ok(0.2))?;
 
         println!("{}", a + b);
+
+        assert!(cs.is_satisfied()?);
+        println!("{}", cs.num_constraints());
+
+        Ok(())
+    }
+
+    #[test]
+    fn sub_constraints() -> Result<(), Box<dyn Error>> {
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        let a = F64Var::new_witness(cs.clone(), || Ok(0.1))?;
+        let b = F64Var::new_witness(cs.clone(), || Ok(0.2))?;
+
+        println!("{}", a - b);
 
         assert!(cs.is_satisfied()?);
         println!("{}", cs.num_constraints());
@@ -481,8 +545,8 @@ mod tests {
     fn mul_constraints() -> Result<(), Box<dyn Error>> {
         let cs = ConstraintSystem::<Fr>::new_ref();
 
-        let a = FloatVar::new_witness(cs.clone(), || Ok(0.1))?;
-        let b = FloatVar::new_witness(cs.clone(), || Ok(0.2))?;
+        let a = F64Var::new_witness(cs.clone(), || Ok(0.1))?;
+        let b = F64Var::new_witness(cs.clone(), || Ok(0.2))?;
 
         println!("{}", a * b);
 
@@ -493,66 +557,42 @@ mod tests {
     }
 
     #[test]
-    fn test_add() -> Result<(), Box<dyn Error>> {
-        pub struct Circuit {
-            a: f64,
-            b: f64,
-            c: f64,
-        }
+    fn div_constraints() -> Result<(), Box<dyn Error>> {
+        let cs = ConstraintSystem::<Fr>::new_ref();
 
-        impl<F: PrimeField> ConstraintSynthesizer<F> for Circuit {
-            fn generate_constraints(
-                self,
-                cs: ConstraintSystemRef<F>,
-            ) -> ark_relations::r1cs::Result<()> {
-                let a = FloatVar::new_witness(cs.clone(), || Ok(self.a))?;
-                let b = FloatVar::new_witness(cs.clone(), || Ok(self.b))?;
-                let c = FloatVar::new_input(cs.clone(), || Ok(self.c))?;
-                let d = a + b;
+        let a = F64Var::new_witness(cs.clone(), || Ok(0.1))?;
+        let b = F64Var::new_witness(cs.clone(), || Ok(0.2))?;
 
-                FloatVar::equal(&d, &c)?;
-                Ok(())
-            }
-        }
+        println!("{}", a / b);
 
+        assert!(cs.is_satisfied()?);
+        println!("{}", cs.num_constraints());
+
+        Ok(())
+    }
+
+    fn binary_op_tester<C: ConstraintSynthesizer<Fr> + Default>(
+        test_data: File,
+        circuit: fn(f64, f64, f64) -> C,
+    ) -> Result<(), Box<dyn Error>> {
         let rng = &mut thread_rng();
 
-        let params = generate_random_parameters::<Bls12_381, _, _>(
-            Circuit {
-                a: 0f64,
-                b: 0f64,
-                c: 0f64,
-            },
-            rng,
-        )?;
-        let pvk = prepare_verifying_key(&params.vk);
+        let params = generate_random_parameters(C::default(), rng)?;
+        let pvk = prepare_verifying_key::<Bls12_381>(&params.vk);
 
-        let test = |a: f64, b: f64| {
-            let r = panic::catch_unwind(|| {
-                let c = a + b;
-
-                let proof =
-                    create_random_proof(Circuit { a, b, c }, &params, &mut test_rng()).unwrap();
-
-                verify_proof(&pvk, &proof, &FloatVar::input(c)).unwrap()
-            });
-            assert!(r.is_ok() && r.unwrap(), "{} {}", a, b);
-        };
-
-        for line in BufReader::new(File::open("tests/add")?).lines() {
-            let line = line?;
-            let v = line.split(' ').collect::<Vec<_>>();
-            let a = f64::from_bits(u64::from_str_radix(v[0], 16)?);
-            let b = f64::from_bits(u64::from_str_radix(v[1], 16)?);
-            let c = f64::from_bits(u64::from_str_radix(v[2], 16)?);
-            if !(a.is_nan()
-                || a.is_infinite()
-                || b.is_nan()
-                || b.is_infinite()
-                || c.is_nan()
-                || c.is_infinite())
+        for line in BufReader::new(test_data).lines() {
+            let v = line?
+                .split(' ')
+                .map(|i| u64::from_str_radix(i, 16).map(f64::from_bits))
+                .collect::<Result<Vec<_>, _>>()?;
+            if v.iter()
+                .take(3)
+                .find(|i| i.is_nan() || i.is_infinite())
+                .is_none()
             {
-                test(a, b);
+                let proof = create_random_proof(circuit(v[0], v[1], v[2]), &params, rng)?;
+                let is_valid = verify_proof(&pvk, &proof, &F64Var::input(v[2]));
+                assert!(is_valid.is_ok() && is_valid.unwrap(), "{} {}", v[0], v[1]);
             }
         }
 
@@ -560,69 +600,86 @@ mod tests {
     }
 
     #[test]
-    fn test_mul() -> Result<(), Box<dyn Error>> {
-        pub struct Circuit {
-            a: f64,
-            b: f64,
-            c: f64,
-        }
+    fn test_add() -> Result<(), Box<dyn Error>> {
+        #[derive(Default)]
+        pub struct Circuit(f64, f64, f64);
 
         impl<F: PrimeField> ConstraintSynthesizer<F> for Circuit {
             fn generate_constraints(
                 self,
                 cs: ConstraintSystemRef<F>,
-            ) -> ark_relations::r1cs::Result<()> {
-                let a = FloatVar::new_witness(cs.clone(), || Ok(self.a))?;
-                let b = FloatVar::new_witness(cs.clone(), || Ok(self.b))?;
-                let c = FloatVar::new_input(cs.clone(), || Ok(self.c))?;
-                let d = a * b;
+            ) -> Result<(), SynthesisError> {
+                let a = F64Var::new_witness(cs.clone(), || Ok(self.0))?;
+                let b = F64Var::new_witness(cs.clone(), || Ok(self.1))?;
+                let c = F64Var::new_input(cs.clone(), || Ok(self.2))?;
 
-                FloatVar::equal(&d, &c)?;
-                Ok(())
+                F64Var::enforce_equal(&(a + b), &c)
             }
         }
 
-        let rng = &mut thread_rng();
+        binary_op_tester(File::open("data/add")?, |a, b, c| Circuit(a, b, c))
+    }
 
-        let params = generate_random_parameters::<Bls12_381, _, _>(
-            Circuit {
-                a: 0f64,
-                b: 0f64,
-                c: 0f64,
-            },
-            rng,
-        )?;
-        let pvk = prepare_verifying_key(&params.vk);
+    #[test]
+    fn test_sub() -> Result<(), Box<dyn Error>> {
+        #[derive(Default)]
+        pub struct Circuit(f64, f64, f64);
 
-        let test = |a: f64, b: f64| {
-            let r = panic::catch_unwind(|| {
-                let c = a * b;
+        impl<F: PrimeField> ConstraintSynthesizer<F> for Circuit {
+            fn generate_constraints(
+                self,
+                cs: ConstraintSystemRef<F>,
+            ) -> Result<(), SynthesisError> {
+                let a = F64Var::new_witness(cs.clone(), || Ok(self.0))?;
+                let b = F64Var::new_witness(cs.clone(), || Ok(self.1))?;
+                let c = F64Var::new_input(cs.clone(), || Ok(self.2))?;
 
-                let proof =
-                    create_random_proof(Circuit { a, b, c }, &params, &mut test_rng()).unwrap();
-
-                verify_proof(&pvk, &proof, &FloatVar::input(c)).unwrap()
-            });
-            assert!(r.is_ok() && r.unwrap(), "{} {}", a, b);
-        };
-
-        for line in BufReader::new(File::open("tests/mul")?).lines() {
-            let line = line?;
-            let v = line.split(' ').collect::<Vec<_>>();
-            let a = f64::from_bits(u64::from_str_radix(v[0], 16)?);
-            let b = f64::from_bits(u64::from_str_radix(v[1], 16)?);
-            let c = f64::from_bits(u64::from_str_radix(v[2], 16)?);
-            if !(a.is_nan()
-                || a.is_infinite()
-                || b.is_nan()
-                || b.is_infinite()
-                || c.is_nan()
-                || c.is_infinite())
-            {
-                test(a, b);
+                F64Var::enforce_equal(&(a - b), &c)
             }
         }
 
-        Ok(())
+        binary_op_tester(File::open("data/sub")?, |a, b, c| Circuit(a, b, c))
+    }
+
+    #[test]
+    fn test_mul() -> Result<(), Box<dyn Error>> {
+        #[derive(Default)]
+        pub struct Circuit(f64, f64, f64);
+
+        impl<F: PrimeField> ConstraintSynthesizer<F> for Circuit {
+            fn generate_constraints(
+                self,
+                cs: ConstraintSystemRef<F>,
+            ) -> Result<(), SynthesisError> {
+                let a = F64Var::new_witness(cs.clone(), || Ok(self.0))?;
+                let b = F64Var::new_witness(cs.clone(), || Ok(self.1))?;
+                let c = F64Var::new_input(cs.clone(), || Ok(self.2))?;
+
+                F64Var::enforce_equal(&(a * b), &c)
+            }
+        }
+
+        binary_op_tester(File::open("data/mul")?, |a, b, c| Circuit(a, b, c))
+    }
+
+    #[test]
+    fn test_div() -> Result<(), Box<dyn Error>> {
+        #[derive(Default)]
+        pub struct Circuit(f64, f64, f64);
+
+        impl<F: PrimeField> ConstraintSynthesizer<F> for Circuit {
+            fn generate_constraints(
+                self,
+                cs: ConstraintSystemRef<F>,
+            ) -> Result<(), SynthesisError> {
+                let a = F64Var::new_witness(cs.clone(), || Ok(self.0))?;
+                let b = F64Var::new_witness(cs.clone(), || Ok(self.1))?;
+                let c = F64Var::new_input(cs.clone(), || Ok(self.2))?;
+
+                F64Var::enforce_equal(&(a / b), &c)
+            }
+        }
+
+        binary_op_tester(File::open("data/div")?, |a, b, c| Circuit(a, b, c))
     }
 }

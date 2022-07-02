@@ -1,3 +1,1 @@
-pub mod float;
-pub mod inference;
-pub mod training;
+pub mod f64;
