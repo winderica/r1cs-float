@@ -325,6 +325,15 @@ impl<F: PrimeField> F64Var<F> {
         }
     }
 
+    pub fn abs(&self) -> Self {
+        Self {
+            cs: self.cs.clone(),
+            sign: FpVar::one(),
+            exponent: self.exponent.clone(),
+            mantissa: self.mantissa.clone(),
+        }
+    }
+
     fn normalize(
         mantissa: &FpVar<F>,
         mantissa_bit_length: usize,

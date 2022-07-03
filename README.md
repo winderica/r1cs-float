@@ -26,7 +26,7 @@ This project is still in its early stages and hasn't been audited/reviewed by th
             * [x] `mul`
             * [x] `div`
             * [x] `neg`
-            * [ ] `abs`
+            * [x] `abs`
             * [ ] `rem`
             * [ ] `fma`
             * [ ] Exponential functions (`sqrt`, `pow`, etc.)
