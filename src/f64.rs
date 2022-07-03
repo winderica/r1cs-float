@@ -5,7 +5,7 @@ use std::{
     ops::Neg,
 };
 
-use ark_ff::{BigInteger, One, PrimeField};
+use ark_ff::{BigInteger, BitIteratorLE, One, PrimeField};
 use ark_r1cs_std::{
     alloc::{AllocVar, AllocationMode},
     boolean::Boolean,
@@ -13,10 +13,7 @@ use ark_r1cs_std::{
     prelude::EqGadget,
     R1CSVar,
 };
-use ark_relations::{
-    ns,
-    r1cs::{ConstraintSystemRef, Namespace, SynthesisError},
-};
+use ark_relations::r1cs::{ConstraintSystemRef, Namespace, SynthesisError};
 use num::{BigUint, ToPrimitive};
 
 #[derive(Clone)]
@@ -91,17 +88,24 @@ impl<F: PrimeField> AllocVar<f64, F> for F64Var<F> {
         mode: AllocationMode,
     ) -> Result<Self, SynthesisError> {
         let cs = cs.into().cs();
-        let [sign, exponent, mantissa] = Self::input(*f()?.borrow());
 
-        let sign = FpVar::new_variable(ns!(cs, "sign"), || Ok(sign), mode)?;
-        ((&sign + FpVar::one()) * (&sign - FpVar::one())).enforce_equal(&FpVar::zero())?;
+        let mut bits = BitIteratorLE::new([f()?.borrow().to_bits()])
+            .map(|i| Boolean::new_variable(cs.clone(), || Ok(i), mode))
+            .collect::<Result<Vec<_>, _>>()?;
 
-        let exponent = FpVar::new_variable(ns!(cs, "exponent"), || Ok(exponent), mode)?;
-        // TODO: replace 1024 with 1023 when ±Infinity and NaNs are supported
-        Self::to_bit_array(&(&exponent + FpVar::Constant(F::from(1024u64))), 11)?;
+        let sign = bits
+            .pop()
+            .unwrap()
+            .select(&FpVar::one().negate()?, &FpVar::one())?;
 
-        let mantissa = FpVar::new_variable(ns!(cs, "mantissa"), || Ok(mantissa), mode)?;
-        Self::to_bit_array(&mantissa, 53)?;
+        let exponent = Boolean::le_bits_to_fp_var(&bits.split_off(52))?;
+        // TODO: remove this when ±Infinity and NaNs are supported
+        exponent.enforce_not_equal(&FpVar::Constant(F::from(2047u64)))?;
+
+        let is_normal = exponent.is_zero()?.not();
+        let exponent = is_normal.select(&exponent, &FpVar::one())? - F::from(1023u64);
+        bits.push(is_normal);
+        let mantissa = Boolean::le_bits_to_fp_var(&bits)?;
 
         Ok(Self {
             cs,
