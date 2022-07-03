@@ -416,7 +416,7 @@ impl<F: PrimeField> F64Var<F> {
             )?
         };
 
-        let rr = mantissa - &qq * FpVar::Constant(F::from(BigUint::one() << (w + 1)));
+        let rr = mantissa - &qq * F::from(BigUint::one() << (w + 1));
         let rr_bits = Self::to_bit_array(&rr, w + 1)?;
 
         let q_lsb = FpVar::from(rr_bits[w].clone());
@@ -505,7 +505,7 @@ impl<F: PrimeField> F64Var<F> {
 
         let p = &x.mantissa * &y.mantissa;
 
-        let exponent = &x.exponent + &y.exponent + FpVar::Constant(F::from((R_SIZE + 1) as u64));
+        let exponent = &x.exponent + &y.exponent + F::from((R_SIZE + 1) as u64);
 
         let (_, e_le_min) = Self::to_abs_bit_array(&(&min_exponent - &exponent), 12)?;
         let exponent = e_le_min.select(&min_exponent, &exponent)?;
@@ -546,11 +546,11 @@ impl<F: PrimeField> F64Var<F> {
                 },
             )?
         };
-        let r = &x.mantissa * FpVar::Constant(F::from(2u8).pow([Q_SIZE as u64])) - &q * &y.mantissa;
+        let r = &x.mantissa * F::from(BigUint::one() << Q_SIZE) - &q * &y.mantissa;
         Self::to_bit_array(&r, 53)?;
         Self::to_bit_array(&(&y.mantissa - &r - FpVar::one()), 53)?;
 
-        let exponent = &x.exponent - &y.exponent + FpVar::Constant(F::from((R_SIZE - 1) as u64));
+        let exponent = &x.exponent - &y.exponent + F::from((R_SIZE - 1) as u64);
 
         let (_, e_le_min) = Self::to_abs_bit_array(&(&min_exponent - &exponent), 12)?;
         let exponent = e_le_min.select(&min_exponent, &exponent)?;
@@ -597,7 +597,7 @@ mod tests {
 
         println!(
             "{}",
-            num_constraints(&cs, || F64Var::new_witness(cs.clone(), || Ok(0.1)))
+            num_constraints(&cs, || F64Var::new_witness(cs.clone(), || Ok(0.1)).unwrap())
         );
 
         assert!(cs.is_satisfied()?);
