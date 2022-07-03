@@ -270,17 +270,17 @@ impl<F: PrimeField> F64Var<F> {
             .collect::<Result<Vec<_>, _>>()
     }
 
-    fn new_bits_witness(
-        cs: ConstraintSystemRef<F>,
-        bits: &[bool],
-    ) -> Result<Vec<Boolean<F>>, SynthesisError> {
-        Self::new_bits_variable(cs, bits, AllocationMode::Witness)
-    }
-
     fn to_bit_array(x: &FpVar<F>, length: usize) -> Result<Vec<Boolean<F>>, SynthesisError> {
-        let bits = Self::new_bits_witness(
-            x.cs(),
+        let cs = x.cs();
+
+        let bits = Self::new_bits_variable(
+            cs.clone(),
             &x.value().unwrap_or_default().into_repr().to_bits_le()[..length],
+            if cs.is_none() {
+                AllocationMode::Constant
+            } else {
+                AllocationMode::Witness
+            },
         )?;
 
         Boolean::le_bits_to_fp_var(&bits)?.enforce_equal(&x)?;
@@ -300,9 +300,14 @@ impl<F: PrimeField> F64Var<F> {
 
             let abs = if x_ge_0 { x } else { x.neg() };
 
+            let mode = if cs.is_none() {
+                AllocationMode::Constant
+            } else {
+                AllocationMode::Witness
+            };
             (
-                Self::new_bits_witness(cs.clone(), &abs.into_repr().to_bits_le()[..length])?,
-                Boolean::new_witness(cs.clone(), || Ok(x_ge_0))?,
+                Self::new_bits_variable(cs.clone(), &abs.into_repr().to_bits_le()[..length], mode)?,
+                Boolean::new_variable(cs.clone(), || Ok(x_ge_0), mode)?,
             )
         };
 
@@ -344,7 +349,15 @@ impl<F: PrimeField> F64Var<F> {
 
             let l_bit_length = (usize::BITS - mantissa_bit_length.leading_zeros()) as usize;
 
-            Self::new_bits_witness(cs.clone(), &F::BigInt::from(l).to_bits_le()[..l_bit_length])?
+            Self::new_bits_variable(
+                cs.clone(),
+                &F::BigInt::from(l).to_bits_le()[..l_bit_length],
+                if cs.is_none() {
+                    AllocationMode::Constant
+                } else {
+                    AllocationMode::Witness
+                },
+            )?
         };
         let l = Boolean::le_bits_to_fp_var(&l_bits)?;
 
@@ -379,7 +392,15 @@ impl<F: PrimeField> F64Var<F> {
             let mut qq = mantissa.value().unwrap_or_default().into_repr();
             qq.divn((w + 1) as u32);
 
-            FpVar::new_witness(cs.clone(), || Ok(F::from_repr(qq).unwrap()))?
+            FpVar::new_variable(
+                cs.clone(),
+                || Ok(F::from_repr(qq).unwrap()),
+                if cs.is_none() {
+                    AllocationMode::Constant
+                } else {
+                    AllocationMode::Witness
+                },
+            )?
         };
 
         let rr = mantissa - &qq * FpVar::Constant(F::from(BigUint::one() << (w + 1)));
@@ -419,7 +440,7 @@ impl<F: PrimeField> F64Var<F> {
         let r_size = FpVar::Constant(F::from(R_SIZE as u64));
         let r_max = FpVar::Constant(F::from(1u128 << R_SIZE));
 
-        let cs = x.cs.clone();
+        let cs = x.cs().or(y.cs());
 
         let (delta_bits, ex_le_ey) = Self::to_abs_bit_array(&(&y.exponent - &x.exponent), 11)?;
 
@@ -465,7 +486,7 @@ impl<F: PrimeField> F64Var<F> {
         const R_SIZE: usize = 54;
         let min_exponent = FpVar::Constant(-F::from(1022u64));
 
-        let cs = x.cs.clone();
+        let cs = x.cs().or(y.cs());
 
         let sign = &x.sign * &y.sign;
 
@@ -495,14 +516,22 @@ impl<F: PrimeField> F64Var<F> {
         const R_SIZE: usize = 55;
         let min_exponent = FpVar::Constant(-F::from(1022u64));
 
-        let cs = x.cs.clone();
+        let cs = x.cs().or(y.cs());
 
         let sign = &x.sign * &y.sign;
 
         let q = {
-            let x: BigUint = x.mantissa.value().unwrap_or(F::zero()).into_repr().into();
-            let y: BigUint = y.mantissa.value().unwrap_or(F::zero()).into_repr().into();
-            FpVar::new_witness(cs.clone(), || Ok(F::from((x << Q_SIZE) / y)))?
+            let x: BigUint = x.mantissa.value().unwrap_or(F::zero()).into();
+            let y: BigUint = y.mantissa.value().unwrap_or(F::zero()).into();
+            FpVar::new_variable(
+                cs.clone(),
+                || Ok(F::from((x << Q_SIZE) / y)),
+                if cs.is_none() {
+                    AllocationMode::Constant
+                } else {
+                    AllocationMode::Witness
+                },
+            )?
         };
         let r = &x.mantissa * FpVar::Constant(F::from(2u8).pow([Q_SIZE as u64])) - &q * &y.mantissa;
         Self::to_bit_array(&r, 53)?;
