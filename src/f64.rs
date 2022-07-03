@@ -92,9 +92,17 @@ impl<F: PrimeField> AllocVar<f64, F> for F64Var<F> {
     ) -> Result<Self, SynthesisError> {
         let cs = cs.into().cs();
         let [sign, exponent, mantissa] = Self::input(*f()?.borrow());
+
         let sign = FpVar::new_variable(ns!(cs, "sign"), || Ok(sign), mode)?;
+        ((&sign + FpVar::one()) * (&sign - FpVar::one())).enforce_equal(&FpVar::zero())?;
+
         let exponent = FpVar::new_variable(ns!(cs, "exponent"), || Ok(exponent), mode)?;
+        // TODO: replace 1024 with 1023 when ±Infinity and NaNs are supported
+        Self::to_bit_array(&(&exponent + FpVar::Constant(F::from(1024u64))), 11)?;
+
         let mantissa = FpVar::new_variable(ns!(cs, "mantissa"), || Ok(mantissa), mode)?;
+        Self::to_bit_array(&mantissa, 53)?;
+
         Ok(Self {
             cs,
             sign,
