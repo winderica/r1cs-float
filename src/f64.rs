@@ -542,6 +542,27 @@ mod tests {
 
     use super::*;
 
+    fn num_constraints<F: FnOnce() -> R, R>(cs: &ConstraintSystemRef<Fr>, f: F) -> usize {
+        let before = cs.num_constraints();
+        f();
+        let after = cs.num_constraints();
+        after - before
+    }
+
+    #[test]
+    fn new_constraints() -> Result<(), Box<dyn Error>> {
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        println!(
+            "{}",
+            num_constraints(&cs, || F64Var::new_witness(cs.clone(), || Ok(0.1)))
+        );
+
+        assert!(cs.is_satisfied()?);
+
+        Ok(())
+    }
+
     #[test]
     fn add_constraints() -> Result<(), Box<dyn Error>> {
         let cs = ConstraintSystem::<Fr>::new_ref();
@@ -549,10 +570,9 @@ mod tests {
         let a = F64Var::new_witness(cs.clone(), || Ok(0.1))?;
         let b = F64Var::new_witness(cs.clone(), || Ok(0.2))?;
 
-        println!("{}", a + b);
+        println!("{}", num_constraints(&cs, || println!("{}", a + b)));
 
         assert!(cs.is_satisfied()?);
-        println!("{}", cs.num_constraints());
 
         Ok(())
     }
@@ -564,10 +584,9 @@ mod tests {
         let a = F64Var::new_witness(cs.clone(), || Ok(0.1))?;
         let b = F64Var::new_witness(cs.clone(), || Ok(0.2))?;
 
-        println!("{}", a - b);
+        println!("{}", num_constraints(&cs, || println!("{}", a - b)));
 
         assert!(cs.is_satisfied()?);
-        println!("{}", cs.num_constraints());
 
         Ok(())
     }
@@ -579,10 +598,9 @@ mod tests {
         let a = F64Var::new_witness(cs.clone(), || Ok(0.1))?;
         let b = F64Var::new_witness(cs.clone(), || Ok(0.2))?;
 
-        println!("{}", a * b);
+        println!("{}", num_constraints(&cs, || println!("{}", a * b)));
 
         assert!(cs.is_satisfied()?);
-        println!("{}", cs.num_constraints());
 
         Ok(())
     }
@@ -594,10 +612,9 @@ mod tests {
         let a = F64Var::new_witness(cs.clone(), || Ok(0.1))?;
         let b = F64Var::new_witness(cs.clone(), || Ok(0.2))?;
 
-        println!("{}", a / b);
+        println!("{}", num_constraints(&cs, || println!("{}", a / b)));
 
         assert!(cs.is_satisfied()?);
-        println!("{}", cs.num_constraints());
 
         Ok(())
     }
