@@ -1,7 +1,7 @@
 use std::{
     borrow::Borrow,
     cmp,
-    fmt::{Debug, Display},
+    fmt::{Debug, Display, Formatter},
     ops::Neg,
 };
 
@@ -17,9 +17,9 @@ use ark_relations::{
     ns,
     r1cs::{ConstraintSystemRef, Namespace, SynthesisError},
 };
-use num::BigUint;
+use num::{BigUint, ToPrimitive};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct F64Var<F: PrimeField> {
     cs: ConstraintSystemRef<F>,
     pub sign: FpVar<F>,
@@ -27,36 +27,42 @@ pub struct F64Var<F: PrimeField> {
     pub mantissa: FpVar<F>,
 }
 
-impl<F: PrimeField> Display for F64Var<F> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let e = self.exponent.value().unwrap_or(F::zero());
-        let e_ge_0 = e.into_repr() < F::modulus_minus_one_div_two();
-        let e: BigUint = if e_ge_0 { e } else { e.neg() }
-            .into_repr()
-            .try_into()
-            .unwrap();
-        let m: BigUint = self
-            .mantissa
-            .value()
-            .unwrap_or_default()
-            .into_repr()
-            .try_into()
-            .unwrap();
-
-        let s = if self.sign.value().unwrap_or(F::one()).is_one() {
-            1
+impl<F: PrimeField> Debug for F64Var<F> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if f.alternate() {
+            write!(
+                f,
+                "Sign: {:?}\nExponent: {:?}\nMantissa: {:?}",
+                self.sign, self.exponent, self.mantissa
+            )
         } else {
-            -1
-        };
+            let s = if self.sign.value().unwrap_or(F::one()).is_one() {
+                1
+            } else {
+                -1
+            };
+            let m: BigUint = self.mantissa.value().unwrap_or_default().into();
+            let m = m.to_u64().unwrap();
+            let e: BigUint = (self.exponent.value().unwrap_or_default() + F::from(1023u64)).into();
+            let e = if m >= 1 << 52 {
+                e.to_i64().unwrap() - 1023
+            } else {
+                0
+            };
 
-        write!(
-            f,
-            "Sign: {}\nExponent: {}{}\nMantissa: {}",
-            &s,
-            if e_ge_0 { "" } else { "-" },
-            &e,
-            &m
-        )
+            write!(f, "Sign: {}\nExponent: {}\nMantissa: {}", s, e, m)
+        }
+    }
+}
+
+impl<F: PrimeField> Display for F64Var<F> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let v = self.value().unwrap();
+        if f.alternate() {
+            write!(f, "{:08x}", v)
+        } else {
+            write!(f, "{}", f64::from_bits(v))
+        }
     }
 }
 
@@ -95,6 +101,26 @@ impl<F: PrimeField> AllocVar<f64, F> for F64Var<F> {
             exponent,
             mantissa,
         })
+    }
+}
+
+impl<F: PrimeField> R1CSVar<F> for F64Var<F> {
+    type Value = u64;
+
+    fn cs(&self) -> ConstraintSystemRef<F> {
+        self.cs.clone()
+    }
+
+    fn value(&self) -> Result<Self::Value, SynthesisError> {
+        let s = if self.sign.value()?.is_one() { 0 } else { 1 };
+        let m: BigUint = self.mantissa.value()?.into();
+        let e: BigUint = (self.exponent.value()? + F::from(1023u64)).into();
+
+        let is_normal = m.bit(52);
+
+        let m = m.to_u64().unwrap() & ((1 << 52) - 1);
+        let e = if is_normal { e.to_u64().unwrap() } else { 0 };
+        Ok((s << 63) + (e << 52) + m)
     }
 }
 
