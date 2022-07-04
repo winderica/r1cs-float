@@ -11,6 +11,7 @@ use ark_r1cs_std::{
     boolean::Boolean,
     fields::{fp::FpVar, FieldVar},
     prelude::EqGadget,
+    select::CondSelectGadget,
     R1CSVar,
 };
 use ark_relations::r1cs::{ConstraintSystemRef, Namespace, SynthesisError};
@@ -133,6 +134,21 @@ impl<F: PrimeField> R1CSVar<F> for F64Var<F> {
         let m = m.to_u64().unwrap() & ((1 << 52) - 1);
         let e = if is_normal { e.to_u64().unwrap() } else { 0 };
         Ok((s << 63) + (e << 52) + m)
+    }
+}
+
+impl<F: PrimeField> CondSelectGadget<F> for F64Var<F> {
+    fn conditionally_select(
+        cond: &Boolean<F>,
+        true_value: &Self,
+        false_value: &Self,
+    ) -> Result<Self, SynthesisError> {
+        Ok(Self {
+            cs: true_value.cs().or(false_value.cs()),
+            sign: cond.select(&true_value.sign, &false_value.sign)?,
+            exponent: cond.select(&true_value.exponent, &false_value.exponent)?,
+            mantissa: cond.select(&true_value.mantissa, &false_value.mantissa)?,
+        })
     }
 }
 
@@ -264,6 +280,65 @@ impl<F: PrimeField> EqGadget<F> for F64Var<F> {
 }
 
 impl<F: PrimeField> F64Var<F> {
+    pub fn frexp(x: &Self) -> Result<(Self, FpVar<F>), SynthesisError> {
+        let cs = x.cs();
+
+        let one = FpVar::one();
+        let two = one.double()?;
+
+        let m = &x.mantissa;
+        let l_bits = {
+            let l = m.value().unwrap_or_default().into_repr().to_bits_le()[..53]
+                .iter()
+                .rev()
+                .position(|&i| i)
+                .unwrap_or(0) as u64;
+
+            let l_bit_length = (usize::BITS - 53usize.leading_zeros()) as usize;
+
+            Self::new_bits_variable(
+                cs.clone(),
+                &F::BigInt::from(l).to_bits_le()[..l_bit_length],
+                if cs.is_none() {
+                    AllocationMode::Constant
+                } else {
+                    AllocationMode::Witness
+                },
+            )?
+        };
+        let l = Boolean::le_bits_to_fp_var(&l_bits)?;
+
+        let is_zero = m.is_zero()?;
+
+        let mantissa_bits = Self::to_bit_array(&(m * two.pow_le(&l_bits)?), 53)?;
+
+        mantissa_bits
+            .last()
+            .unwrap()
+            .or(&is_zero)?
+            .enforce_equal(&Boolean::TRUE)?;
+
+        let e = &x.exponent + FpVar::one() - l;
+        Ok((
+            Self {
+                cs: x.cs().clone(),
+                sign: x.sign.clone(),
+                exponent: FpVar::one().negate()?,
+                mantissa: Boolean::le_bits_to_fp_var(&mantissa_bits)?,
+            },
+            e,
+        ))
+    }
+
+    pub fn ldexp(x: &Self, e: &FpVar<F>) -> Result<Self, SynthesisError> {
+        Ok(Self {
+            cs: x.cs().clone(),
+            sign: x.sign.clone(),
+            exponent: &x.exponent + e,
+            mantissa: x.mantissa.clone(),
+        })
+    }
+
     fn new_bits_variable(
         cs: ConstraintSystemRef<F>,
         bits: &[bool],
@@ -568,6 +643,78 @@ impl<F: PrimeField> F64Var<F> {
             mantissa,
         })
     }
+
+    fn s0(x: &Self) -> Result<Self, SynthesisError> {
+        let cs = x.cs();
+        let (m, e) = Self::frexp(&x)?;
+        let e_bits = Self::to_bit_array(&(e + F::from(2048u64)), 12)?;
+        let a = e_bits[0].select(
+            &F64Var::new_constant(cs.clone(), 2. - f64::sqrt(2.))?,
+            &F64Var::new_constant(cs.clone(), (f64::sqrt(2.) - 1.) * 2.)?,
+        )?;
+        let b = e_bits[0].select(
+            &F64Var::new_constant(cs.clone(), f64::sqrt(2.) - 1.)?,
+            &F64Var::new_constant(cs.clone(), 2. - f64::sqrt(2.))?,
+        )?;
+        let m = a * m + b;
+        let e = Boolean::le_bits_to_fp_var(&e_bits[1..])? - F::from(1024u64);
+        Self::ldexp(&m, &e)
+    }
+
+    pub fn sqrt(x: &Self) -> Result<Self, SynthesisError> {
+        let mut y = Self::s0(&x)?;
+        for _ in 0..5 {
+            y = &y + x / &y;
+            y.exponent = y.exponent - FpVar::one();
+        }
+        let z = x / &y;
+
+        let is_zero = x.mantissa.is_zero()?;
+        let e = Boolean::le_bits_to_fp_var(
+            &Self::to_bit_array(&(&x.exponent + F::from(1024u64)), 11)?[1..],
+        )? - F::from(512u64);
+        let y_is_preferred = y.exponent.is_eq(&e)?;
+        let z_is_preferred = z.exponent.is_eq(&e)?;
+
+        let yy = is_zero.select(&FpVar::zero(), &y.mantissa.square()?)?;
+        let zz = z.mantissa.square()?;
+
+        let xy = Self::to_abs_bit_array(
+            &(&x.mantissa
+                * FpVar::one().double()?.pow_le(&Self::to_bit_array(
+                    &(FpVar::Constant(F::from(52u8)) - y.exponent.double()? + &x.exponent),
+                    7,
+                )?)?
+                - yy),
+            54,
+        )?
+        .0;
+        let xz = Self::to_abs_bit_array(
+            &(&x.mantissa
+                * FpVar::one().double()?.pow_le(&Self::to_bit_array(
+                    &is_zero.select(
+                        &FpVar::one(),
+                        &(FpVar::Constant(F::from(52u8)) - z.exponent.double()? + &x.exponent),
+                    )?,
+                    7,
+                )?)?
+                - zz),
+            54,
+        )?
+        .0;
+        let yz = Self::to_abs_bit_array(
+            &(Boolean::le_bits_to_fp_var(&xy)? - Boolean::le_bits_to_fp_var(&xz)?),
+            54,
+        )?
+        .1;
+        let m = yz.select(&z.mantissa, &y.mantissa)?;
+        y.exponent = y_is_preferred.select(&y.exponent, &z.exponent)?;
+        y.mantissa = y_is_preferred.select(
+            &z_is_preferred.select(&m, &y.mantissa)?,
+            &z_is_preferred.select(&z.mantissa, &m)?,
+        )?;
+        is_zero.select(x, &y)
+    }
 }
 
 #[cfg(test)]
@@ -661,6 +808,54 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn sqrt_constraints() -> Result<(), Box<dyn Error>> {
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        let a = F64Var::new_witness(cs.clone(), || Ok(0.1))?;
+
+        println!(
+            "{}",
+            num_constraints(&cs, || println!("{}", F64Var::sqrt(&a).unwrap()))
+        );
+
+        assert!(cs.is_satisfied()?);
+
+        Ok(())
+    }
+
+    fn test_unary_op(
+        test_data: File,
+        op: fn(F64Var<Fr>) -> F64Var<Fr>,
+    ) -> Result<(), Box<dyn Error>> {
+        let r = BufReader::new(test_data)
+            .lines()
+            .collect::<Result<Vec<_>, _>>()?
+            .par_iter()
+            .map(|line| {
+                line.split(' ')
+                    .take(2)
+                    .map(|i| u64::from_str_radix(i, 16).map(f64::from_bits))
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap()
+            })
+            .filter(|v| v.iter().find(|i| i.is_nan() || i.is_infinite()).is_none())
+            .filter(|v| {
+                let cs = ConstraintSystem::<Fr>::new_ref();
+                let a = F64Var::new_witness(cs.clone(), || Ok(v[0])).unwrap();
+                let b = F64Var::new_witness(cs.clone(), || Ok(v[1])).unwrap();
+
+                F64Var::enforce_equal(&op(a), &b).unwrap();
+
+                !cs.is_satisfied().unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(r.len(), 0, "{:#?}", r);
+
+        Ok(())
+    }
+
     fn test_binary_op(
         test_data: File,
         op: fn(F64Var<Fr>, F64Var<Fr>) -> F64Var<Fr>,
@@ -712,5 +907,10 @@ mod tests {
     #[test]
     fn test_div() -> Result<(), Box<dyn Error>> {
         test_binary_op(File::open("data/div")?, std::ops::Div::div)
+    }
+
+    #[test]
+    fn test_sqrt() -> Result<(), Box<dyn Error>> {
+        test_unary_op(File::open("data/sqrt")?, |x| F64Var::sqrt(&x).unwrap())
     }
 }

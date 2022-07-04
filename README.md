@@ -29,7 +29,10 @@ This project is still in its early stages and hasn't been audited/reviewed by th
             * [x] `abs`
             * [ ] `rem`
             * [ ] `fma`
-            * [ ] Exponential functions (`sqrt`, `pow`, etc.)
+            * Exponential functions
+                * [x] `sqrt`
+                * [ ] `pow`
+                * [ ] etc.
             * [ ] Logarithm functions (`ln`, `log2`, etc.)
             * [ ] Trigonometric functions (`sin`, `cos`, etc.)
         * Comparisons
@@ -43,6 +46,7 @@ This project is still in its early stages and hasn't been audited/reviewed by th
     * `f64::sub`: 380 constraints
     * `f64::mul`: 347 constraints
     * `f64::div`: 563 constraints
+    * `f64::sqrt`: 6323 constraints
 
 ## Usage
 
