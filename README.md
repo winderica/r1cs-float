@@ -42,8 +42,8 @@ This project is still in its early stages and hasn't been audited/reviewed by th
         * Conversions
             * [ ] Rounding functions (`ceil`, `floor`, etc.)
 * Highly optimized
-    * `f64::add`: 380 constraints
-    * `f64::sub`: 380 constraints
+    * `f64::add`: 378 constraints
+    * `f64::sub`: 378 constraints
     * `f64::mul`: 347 constraints
     * `f64::div`: 563 constraints
     * `f64::sqrt`: 6323 constraints

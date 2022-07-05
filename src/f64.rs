@@ -20,7 +20,7 @@ use num::{BigUint, ToPrimitive};
 #[derive(Clone)]
 pub struct F64Var<F: PrimeField> {
     cs: ConstraintSystemRef<F>,
-    pub sign: FpVar<F>,
+    pub sign: Boolean<F>,
     pub exponent: FpVar<F>,
     pub mantissa: FpVar<F>,
 }
@@ -34,10 +34,10 @@ impl<F: PrimeField> Debug for F64Var<F> {
                 self.sign, self.exponent, self.mantissa
             )
         } else {
-            let s = if self.sign.value().unwrap_or(F::one()).is_one() {
-                1
+            let s = if self.sign.value().unwrap_or_default() {
+                "-"
             } else {
-                -1
+                "+"
             };
             let m: BigUint = self.mantissa.value().unwrap_or_default().into();
             let m = m.to_u64().unwrap();
@@ -94,10 +94,7 @@ impl<F: PrimeField> AllocVar<f64, F> for F64Var<F> {
             .map(|i| Boolean::new_variable(cs.clone(), || Ok(i), mode))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let sign = bits
-            .pop()
-            .unwrap()
-            .select(&FpVar::one().negate()?, &FpVar::one())?;
+        let sign = bits.pop().unwrap();
 
         let exponent = Boolean::le_bits_to_fp_var(&bits.split_off(52))?;
         // TODO: remove this when ±Infinity and NaNs are supported
@@ -125,7 +122,7 @@ impl<F: PrimeField> R1CSVar<F> for F64Var<F> {
     }
 
     fn value(&self) -> Result<Self::Value, SynthesisError> {
-        let s = if self.sign.value()?.is_one() { 0 } else { 1 };
+        let s = self.sign.value()? as u64;
         let m: BigUint = self.mantissa.value()?.into();
         let e: BigUint = (self.exponent.value()? + F::from(1023u64)).into();
 
@@ -398,7 +395,7 @@ impl<F: PrimeField> F64Var<F> {
     fn neg(&self) -> Self {
         Self {
             cs: self.cs.clone(),
-            sign: FpVar::zero() - &self.sign,
+            sign: self.sign.not(),
             exponent: self.exponent.clone(),
             mantissa: self.mantissa.clone(),
         }
@@ -407,7 +404,7 @@ impl<F: PrimeField> F64Var<F> {
     pub fn abs(&self) -> Self {
         Self {
             cs: self.cs.clone(),
-            sign: FpVar::one(),
+            sign: Boolean::FALSE,
             exponent: self.exponent.clone(),
             mantissa: self.mantissa.clone(),
         }
@@ -539,8 +536,8 @@ impl<F: PrimeField> F64Var<F> {
 
         let two_to_delta = delta_le_w.select(&two.pow_le(&delta_bits[..6])?, &one)?;
 
-        let xx = &x.sign * &x.mantissa;
-        let yy = &y.sign * &y.mantissa;
+        let xx = x.sign.select(&x.mantissa.negate()?, &x.mantissa)?;
+        let yy = y.sign.select(&y.mantissa.negate()?, &y.mantissa)?;
         let zz = ex_le_ey.select(&xx, &yy)?;
         let ww = &xx + &yy - &zz;
 
@@ -550,10 +547,7 @@ impl<F: PrimeField> F64Var<F> {
 
         let s = Boolean::le_bits_to_fp_var(&s_bits)?;
 
-        let sign = x
-            .sign
-            .is_eq(&y.sign)?
-            .select(&x.sign, &(FpVar::from(s_ge_0).double()? - &one))?;
+        let sign = x.sign.is_eq(&y.sign)?.select(&x.sign, &s_ge_0.not())?;
 
         let (s, exponent) = Self::normalize(&s, R_SIZE + S_SIZE, &exponent)?;
 
@@ -576,7 +570,7 @@ impl<F: PrimeField> F64Var<F> {
 
         let cs = x.cs().or(y.cs());
 
-        let sign = &x.sign * &y.sign;
+        let sign = x.sign.xor(&y.sign)?;
 
         let p = &x.mantissa * &y.mantissa;
 
@@ -606,7 +600,7 @@ impl<F: PrimeField> F64Var<F> {
 
         let cs = x.cs().or(y.cs());
 
-        let sign = &x.sign * &y.sign;
+        let sign = x.sign.xor(&y.sign)?;
 
         let q = {
             let x: BigUint = x.mantissa.value().unwrap_or(F::zero()).into();
