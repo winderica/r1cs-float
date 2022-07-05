@@ -77,7 +77,7 @@ impl<F: PrimeField> ConstraintSynthesizer<F> for InferenceCircuit {
             .is_zero()?
             .select(
                 &v_var.mantissa.is_eq(&FpVar::zero())?,
-                &v_var.sign.is_eq(&r_var)?,
+                &v_var.sign.select(&FpVar::one().negate()?, &FpVar::one())?.is_eq(&r_var)?,
             )?
             .enforce_equal(&Boolean::TRUE)?;
         Ok(())
@@ -101,8 +101,6 @@ fn main() {
 
     let w = Witness { a, b };
 
-    println!("Line: y = ax + b = {}x + {}", a, b);
-
     while y < 2f64 {
         let r = infer(a, b, x, y);
 
@@ -120,16 +118,6 @@ fn main() {
         });
 
         assert!(verify_proof(&pvk, &proof, &input).unwrap());
-        println!(
-            "Point ({}, {}) is {} the line, zk verification is successful",
-            x,
-            y,
-            match r {
-                Ordering::Greater => "below",
-                Ordering::Less => "above",
-                Ordering::Equal => "on",
-            },
-        );
         y += 0.25;
     }
 }

@@ -1,6 +1,5 @@
 use std::{
     borrow::Borrow,
-    cmp,
     fmt::{Debug, Display, Formatter},
     ops::Neg,
 };
@@ -65,20 +64,8 @@ impl<F: PrimeField> Display for F64Var<F> {
 }
 
 impl<F: PrimeField> F64Var<F> {
-    pub fn input(i: f64) -> [F; 3] {
-        let i = i.to_bits();
-        let sign = i >> 63;
-        let mantissa = i & ((1 << 52) - 1);
-        let exponent = (i - mantissa - (sign << 63)) >> 52;
-        let sign = if sign == 0 { F::one() } else { -F::one() };
-        let mantissa = F::from(mantissa)
-            + if exponent == 0 {
-                F::zero()
-            } else {
-                F::from(1u64 << 52)
-            };
-        let exponent = F::from(cmp::max(exponent, 1)) - F::from(1023u64);
-        [sign, exponent, mantissa]
+    pub fn input(i: f64) -> Vec<F> {
+        BitIteratorLE::new([i.to_bits()]).map(F::from).collect()
     }
 }
 
