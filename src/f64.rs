@@ -18,7 +18,6 @@ use num::{BigUint, ToPrimitive};
 
 #[derive(Clone)]
 pub struct F64Var<F: PrimeField> {
-    cs: ConstraintSystemRef<F>,
     pub sign: Boolean<F>,
     pub exponent: FpVar<F>,
     pub mantissa: FpVar<F>,
@@ -93,7 +92,6 @@ impl<F: PrimeField> AllocVar<f64, F> for F64Var<F> {
         let mantissa = Boolean::le_bits_to_fp_var(&bits)?;
 
         Ok(Self {
-            cs,
             sign,
             exponent,
             mantissa,
@@ -105,7 +103,7 @@ impl<F: PrimeField> R1CSVar<F> for F64Var<F> {
     type Value = u64;
 
     fn cs(&self) -> ConstraintSystemRef<F> {
-        self.cs.clone()
+        unimplemented!("Call `self.sign.cs()`/`self.exponent.cs()`/`self.mantissa.cs()` instead")
     }
 
     fn value(&self) -> Result<Self::Value, SynthesisError> {
@@ -128,7 +126,6 @@ impl<F: PrimeField> CondSelectGadget<F> for F64Var<F> {
         false_value: &Self,
     ) -> Result<Self, SynthesisError> {
         Ok(Self {
-            cs: true_value.cs().or(false_value.cs()),
             sign: cond.select(&true_value.sign, &false_value.sign)?,
             exponent: cond.select(&true_value.exponent, &false_value.exponent)?,
             mantissa: cond.select(&true_value.mantissa, &false_value.mantissa)?,
@@ -210,7 +207,7 @@ impl<F: PrimeField> Neg for &F64Var<F> {
     type Output = F64Var<F>;
 
     fn neg(self) -> Self::Output {
-        F64Var::<F>::neg(self)
+        F64Var::neg(self)
     }
 }
 
@@ -220,7 +217,7 @@ impl_ops!(
     add,
     AddAssign,
     add_assign,
-    |a, b| { F64Var::<F>::add(a, b).unwrap() },
+    |a, b| { F64Var::add(a, b).unwrap() },
     F: PrimeField,
 );
 
@@ -230,7 +227,7 @@ impl_ops!(
     sub,
     SubAssign,
     sub_assign,
-    |a, b: &'a F64Var<F>| { F64Var::<F>::add(a, &-b).unwrap() },
+    |a, b: &'a F64Var<F>| { F64Var::add(a, &-b).unwrap() },
     F: PrimeField,
 );
 
@@ -240,7 +237,7 @@ impl_ops!(
     mul,
     MulAssign,
     mul_assign,
-    |a, b| { F64Var::<F>::mul(a, b).unwrap() },
+    |a, b| { F64Var::mul(a, b).unwrap() },
     F: PrimeField,
 );
 
@@ -250,7 +247,7 @@ impl_ops!(
     div,
     DivAssign,
     div_assign,
-    |a, b| { F64Var::<F>::div(a, b).unwrap() },
+    |a, b| { F64Var::div(a, b).unwrap() },
     F: PrimeField,
 );
 
@@ -264,65 +261,6 @@ impl<F: PrimeField> EqGadget<F> for F64Var<F> {
 }
 
 impl<F: PrimeField> F64Var<F> {
-    pub fn frexp(x: &Self) -> Result<(Self, FpVar<F>), SynthesisError> {
-        let cs = x.cs();
-
-        let one = FpVar::one();
-        let two = one.double()?;
-
-        let m = &x.mantissa;
-        let l_bits = {
-            let l = m.value().unwrap_or_default().into_repr().to_bits_le()[..53]
-                .iter()
-                .rev()
-                .position(|&i| i)
-                .unwrap_or(0) as u64;
-
-            let l_bit_length = (usize::BITS - 53usize.leading_zeros()) as usize;
-
-            Self::new_bits_variable(
-                cs.clone(),
-                &F::BigInt::from(l).to_bits_le()[..l_bit_length],
-                if cs.is_none() {
-                    AllocationMode::Constant
-                } else {
-                    AllocationMode::Witness
-                },
-            )?
-        };
-        let l = Boolean::le_bits_to_fp_var(&l_bits)?;
-
-        let is_zero = m.is_zero()?;
-
-        let mantissa_bits = Self::to_bit_array(&(m * two.pow_le(&l_bits)?), 53)?;
-
-        mantissa_bits
-            .last()
-            .unwrap()
-            .or(&is_zero)?
-            .enforce_equal(&Boolean::TRUE)?;
-
-        let e = &x.exponent + FpVar::one() - l;
-        Ok((
-            Self {
-                cs: x.cs().clone(),
-                sign: x.sign.clone(),
-                exponent: FpVar::one().negate()?,
-                mantissa: Boolean::le_bits_to_fp_var(&mantissa_bits)?,
-            },
-            e,
-        ))
-    }
-
-    pub fn ldexp(x: &Self, e: &FpVar<F>) -> Result<Self, SynthesisError> {
-        Ok(Self {
-            cs: x.cs().clone(),
-            sign: x.sign.clone(),
-            exponent: &x.exponent + e,
-            mantissa: x.mantissa.clone(),
-        })
-    }
-
     fn new_bits_variable(
         cs: ConstraintSystemRef<F>,
         bits: &[bool],
@@ -330,7 +268,7 @@ impl<F: PrimeField> F64Var<F> {
     ) -> Result<Vec<Boolean<F>>, SynthesisError> {
         bits.iter()
             .map(|i| Boolean::new_variable(cs.clone(), || Ok(i), mode))
-            .collect::<Result<Vec<_>, _>>()
+            .collect()
     }
 
     fn to_bit_array(x: &FpVar<F>, length: usize) -> Result<Vec<Boolean<F>>, SynthesisError> {
@@ -381,7 +319,6 @@ impl<F: PrimeField> F64Var<F> {
 
     fn neg(&self) -> Self {
         Self {
-            cs: self.cs.clone(),
             sign: self.sign.not(),
             exponent: self.exponent.clone(),
             mantissa: self.mantissa.clone(),
@@ -390,7 +327,6 @@ impl<F: PrimeField> F64Var<F> {
 
     pub fn abs(&self) -> Self {
         Self {
-            cs: self.cs.clone(),
             sign: Boolean::FALSE,
             exponent: self.exponent.clone(),
             mantissa: self.mantissa.clone(),
@@ -512,8 +448,6 @@ impl<F: PrimeField> F64Var<F> {
         let r_size = FpVar::Constant(F::from(R_SIZE as u64));
         let r_max = FpVar::Constant(F::from(1u128 << R_SIZE));
 
-        let cs = x.cs().or(y.cs());
-
         let (delta_bits, ex_le_ey) = Self::to_abs_bit_array(&(&y.exponent - &x.exponent), 11)?;
 
         let exponent = ex_le_ey.select(&y.exponent, &x.exponent)? + &one;
@@ -543,7 +477,6 @@ impl<F: PrimeField> F64Var<F> {
         let (mantissa, exponent) = Self::fix_overflow(&mantissa, &exponent)?;
 
         Ok(Self {
-            cs,
             sign,
             exponent,
             mantissa,
@@ -554,8 +487,6 @@ impl<F: PrimeField> F64Var<F> {
         const P_SIZE: usize = 106;
         const R_SIZE: usize = 54;
         let min_exponent = FpVar::Constant(-F::from(1022u64));
-
-        let cs = x.cs().or(y.cs());
 
         let sign = x.sign.xor(&y.sign)?;
 
@@ -573,7 +504,6 @@ impl<F: PrimeField> F64Var<F> {
         let (mantissa, exponent) = Self::fix_overflow(&mantissa, &exponent)?;
 
         Ok(Self {
-            cs,
             sign,
             exponent,
             mantissa,
@@ -585,11 +515,10 @@ impl<F: PrimeField> F64Var<F> {
         const R_SIZE: usize = 55;
         let min_exponent = FpVar::Constant(-F::from(1022u64));
 
-        let cs = x.cs().or(y.cs());
-
         let sign = x.sign.xor(&y.sign)?;
 
         let q = {
+            let cs = x.mantissa.cs().or(y.mantissa.cs());
             let x: BigUint = x.mantissa.value().unwrap_or(F::zero()).into();
             let y: BigUint = y.mantissa.value().unwrap_or(F::zero()).into();
             FpVar::new_variable(
@@ -618,7 +547,6 @@ impl<F: PrimeField> F64Var<F> {
         let (mantissa, exponent) = Self::fix_overflow(&mantissa, &exponent)?;
 
         Ok(Self {
-            cs,
             sign,
             exponent,
             mantissa,
