@@ -625,76 +625,44 @@ impl<F: PrimeField> F64Var<F> {
         })
     }
 
-    fn s0(x: &Self) -> Result<Self, SynthesisError> {
-        let cs = x.cs();
-        let (m, e) = Self::frexp(&x)?;
-        let e_bits = Self::to_bit_array(&(e + F::from(2048u64)), 12)?;
-        let a = e_bits[0].select(
-            &F64Var::new_constant(cs.clone(), 2. - f64::sqrt(2.))?,
-            &F64Var::new_constant(cs.clone(), (f64::sqrt(2.) - 1.) * 2.)?,
-        )?;
-        let b = e_bits[0].select(
-            &F64Var::new_constant(cs.clone(), f64::sqrt(2.) - 1.)?,
-            &F64Var::new_constant(cs.clone(), 2. - f64::sqrt(2.))?,
-        )?;
-        let m = a * m + b;
-        let e = Boolean::le_bits_to_fp_var(&e_bits[1..])? - F::from(1024u64);
-        Self::ldexp(&m, &e)
-    }
-
     pub fn sqrt(x: &Self) -> Result<Self, SynthesisError> {
-        let mut y = Self::s0(&x)?;
-        for _ in 0..5 {
-            y = &y + x / &y;
-            y.exponent = y.exponent - FpVar::one();
-        }
-        let z = x / &y;
+        const L_SIZE: usize = 86;
+        const R_SIZE: usize = 54;
 
-        let is_zero = x.mantissa.is_zero()?;
-        let e = Boolean::le_bits_to_fp_var(
-            &Self::to_bit_array(&(&x.exponent + F::from(1024u64)), 11)?[1..],
-        )? - F::from(512u64);
-        let y_is_preferred = y.exponent.is_eq(&e)?;
-        let z_is_preferred = z.exponent.is_eq(&e)?;
+        let mut e_bits = Self::to_bit_array(&(&x.exponent + F::from(1024u64)), 11)?;
+        let e_lsb = e_bits.remove(0);
+        let e = Boolean::le_bits_to_fp_var(&e_bits)? - F::from(512u64);
 
-        let yy = is_zero.select(&FpVar::zero(), &y.mantissa.square()?)?;
-        let zz = z.mantissa.square()?;
+        let m = &x.mantissa * F::from(BigUint::one() << L_SIZE);
+        let m = e_lsb.select(&m.double()?, &m)?;
+        let n = {
+            let cs = m.cs();
+            let m: BigUint = m.value().unwrap_or_default().into();
+            FpVar::new_variable(
+                cs.clone(),
+                || Ok(F::from(m.sqrt())),
+                if cs.is_none() {
+                    AllocationMode::Constant
+                } else {
+                    AllocationMode::Witness
+                },
+            )?
+        };
+        let nn = n.square()?;
+        // n^2 <= m  =>  m - n^2 >= 0
+        Self::to_bit_array(&(&m - &nn), L_SIZE + R_SIZE)?;
+        // (n + 1)^2 > m  =>  n^2 + 2n + 1 - m > 0  =>  n^2 + 2n - m >= 0
+        Self::to_bit_array(&(&nn + n.double()? - &m), L_SIZE + R_SIZE)?;
 
-        let xy = Self::to_abs_bit_array(
-            &(&x.mantissa
-                * FpVar::one().double()?.pow_le(&Self::to_bit_array(
-                    &(FpVar::Constant(F::from(52u8)) - y.exponent.double()? + &x.exponent),
-                    7,
-                )?)?
-                - yy),
-            54,
-        )?
-        .0;
-        let xz = Self::to_abs_bit_array(
-            &(&x.mantissa
-                * FpVar::one().double()?.pow_le(&Self::to_bit_array(
-                    &is_zero.select(
-                        &FpVar::one(),
-                        &(FpVar::Constant(F::from(52u8)) - z.exponent.double()? + &x.exponent),
-                    )?,
-                    7,
-                )?)?
-                - zz),
-            54,
-        )?
-        .0;
-        let yz = Self::to_abs_bit_array(
-            &(Boolean::le_bits_to_fp_var(&xy)? - Boolean::le_bits_to_fp_var(&xz)?),
-            54,
-        )?
-        .1;
-        let m = yz.select(&z.mantissa, &y.mantissa)?;
-        y.exponent = y_is_preferred.select(&y.exponent, &z.exponent)?;
-        y.mantissa = y_is_preferred.select(
-            &z_is_preferred.select(&m, &y.mantissa)?,
-            &z_is_preferred.select(&z.mantissa, &m)?,
-        )?;
-        is_zero.select(x, &y)
+        let (n, exponent) = Self::normalize(&n, (L_SIZE + R_SIZE) / 2, &e)?;
+
+        let mantissa = Self::round(&n, (L_SIZE + R_SIZE) / 2)?;
+
+        Ok(Self {
+            sign: x.sign.clone(),
+            exponent,
+            mantissa,
+        })
     }
 }
 

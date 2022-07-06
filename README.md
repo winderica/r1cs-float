@@ -46,7 +46,7 @@ This project is still in its early stages and hasn't been audited/reviewed by th
     * `f64::sub`: 378 constraints
     * `f64::mul`: 347 constraints
     * `f64::div`: 563 constraints
-    * `f64::sqrt`: 6323 constraints
+    * `f64::sqrt`: 439 constraints
 
 ## Usage
 
