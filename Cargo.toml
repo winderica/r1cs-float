@@ -25,3 +25,6 @@ opt-level = 3
 
 [profile.test]
 opt-level = 3
+
+[lib]
+bench = false
