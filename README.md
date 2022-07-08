@@ -37,16 +37,16 @@ This project is still in its early stages and hasn't been audited/reviewed by th
             * [ ] Trigonometric functions (`sin`, `cos`, etc.)
         * Comparisons
             * [x] `eq`
-            * [ ] `lt`, `gt`, `le`, `ge`
+            * [x] `lt`, `gt`, `le`, `ge`
             * [ ] `min`, `max`
         * Conversions
             * [ ] Rounding functions (`ceil`, `floor`, etc.)
 * Highly optimized
-    * `f64::add`: 378 constraints
-    * `f64::sub`: 378 constraints
+    * `f64::{add, sub}`: 378 constraints
     * `f64::mul`: 347 constraints
     * `f64::div`: 563 constraints
     * `f64::sqrt`: 439 constraints
+    * `f64::{lt, gt, le, ge}`: 86 constraints
 
 ## Usage
 

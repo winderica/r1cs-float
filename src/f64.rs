@@ -592,6 +592,68 @@ impl<F: PrimeField> F64Var<F> {
             mantissa,
         })
     }
+
+    fn less(x: &Self, y: &Self, allow_eq: &Boolean<F>) -> Result<Boolean<F>, SynthesisError> {
+        let xe_ge_ye = Self::to_abs_bit_array(&(&x.exponent - &y.exponent), 11)?.1;
+        let xm_ge_ym = Self::to_abs_bit_array(&(&x.mantissa - &y.mantissa), 53)?.1;
+        x.sign.is_eq(&y.sign)?.select(
+            &x.exponent.is_eq(&y.exponent)?.select(
+                &x.mantissa
+                    .is_eq(&y.mantissa)?
+                    .select(allow_eq, &x.sign.select(&xm_ge_ym, &xm_ge_ym.not())?)?,
+                &x.sign.select(&xe_ge_ye, &xe_ge_ye.not())?,
+            )?,
+            &(&x.mantissa + &y.mantissa)
+                .is_zero()?
+                .select(allow_eq, &x.sign)?,
+        )
+        /*
+         * Equivalent to:
+         * ```
+         * if x.sign == y.sign {
+         *     if x.exponent == y.exponent {
+         *         if x.mantissa == y.mantissa {
+         *             return allow_eq;
+         *         } else {
+         *             if x.sign {
+         *                 return x.mantissa > y.mantissa;
+         *             } else {
+         *                 return x.mantissa < y.mantissa;
+         *             }
+         *         }
+         *     } else {
+         *         if x.sign {
+         *             return x.exponent > y.exponent;
+         *         } else {
+         *             return x.exponent < y.exponent;
+         *         }
+         *     }
+         * } else {
+         *     if x.mantissa + y.mantissa == 0 {
+         *         return allow_eq;
+         *     } else {
+         *         return x.sign;
+         *     }
+         * }
+         * ```
+         */
+    }
+
+    pub fn is_lt(x: &Self, y: &Self) -> Result<Boolean<F>, SynthesisError> {
+        Self::less(x, y, &Boolean::FALSE)
+    }
+
+    pub fn is_le(x: &Self, y: &Self) -> Result<Boolean<F>, SynthesisError> {
+        Self::less(x, y, &Boolean::TRUE)
+    }
+
+    pub fn is_gt(x: &Self, y: &Self) -> Result<Boolean<F>, SynthesisError> {
+        Self::less(x, y, &Boolean::TRUE).map(|i| i.not())
+    }
+
+    pub fn is_ge(x: &Self, y: &Self) -> Result<Boolean<F>, SynthesisError> {
+        Self::less(x, y, &Boolean::FALSE).map(|i| i.not())
+    }
 }
 
 #[cfg(test)]
@@ -701,31 +763,104 @@ mod tests {
         Ok(())
     }
 
-    fn test_unary_op(
+    #[test]
+    fn lt_constraints() -> Result<(), Box<dyn Error>> {
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        let a = F64Var::new_witness(cs.clone(), || Ok(0.1))?;
+        let b = F64Var::new_witness(cs.clone(), || Ok(0.2))?;
+
+        println!(
+            "{}",
+            num_constraints(&cs, || println!(
+                "{}",
+                F64Var::is_lt(&a, &b).unwrap().value().unwrap()
+            ))
+        );
+
+        assert!(cs.is_satisfied()?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn le_constraints() -> Result<(), Box<dyn Error>> {
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        let a = F64Var::new_witness(cs.clone(), || Ok(0.1))?;
+        let b = F64Var::new_witness(cs.clone(), || Ok(0.2))?;
+
+        println!(
+            "{}",
+            num_constraints(&cs, || println!(
+                "{}",
+                F64Var::is_le(&a, &b).unwrap().value().unwrap()
+            ))
+        );
+
+        assert!(cs.is_satisfied()?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn gt_constraints() -> Result<(), Box<dyn Error>> {
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        let a = F64Var::new_witness(cs.clone(), || Ok(0.1))?;
+        let b = F64Var::new_witness(cs.clone(), || Ok(0.2))?;
+
+        println!(
+            "{}",
+            num_constraints(&cs, || println!(
+                "{}",
+                F64Var::is_gt(&a, &b).unwrap().value().unwrap()
+            ))
+        );
+
+        assert!(cs.is_satisfied()?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn ge_constraints() -> Result<(), Box<dyn Error>> {
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        let a = F64Var::new_witness(cs.clone(), || Ok(0.1))?;
+        let b = F64Var::new_witness(cs.clone(), || Ok(0.2))?;
+
+        println!(
+            "{}",
+            num_constraints(&cs, || println!(
+                "{}",
+                F64Var::is_ge(&a, &b).unwrap().value().unwrap()
+            ))
+        );
+
+        assert!(cs.is_satisfied()?);
+
+        Ok(())
+    }
+
+    fn test_op<
+        T: Send + Debug,
+        P: FnOnce(&String) -> T + Send + Sync + Copy,
+        S: FnOnce(&T) -> bool + Send + Sync + Copy,
+        C: FnOnce(&T) -> bool + Send + Sync + Copy,
+    >(
         test_data: File,
-        op: fn(F64Var<Fr>) -> F64Var<Fr>,
+        parse_line: P,
+        is_supported: S,
+        is_correct: C,
     ) -> Result<(), Box<dyn Error>> {
         let r = BufReader::new(test_data)
             .lines()
             .collect::<Result<Vec<_>, _>>()?
             .par_iter()
-            .map(|line| {
-                line.split(' ')
-                    .take(2)
-                    .map(|i| u64::from_str_radix(i, 16).map(f64::from_bits))
-                    .collect::<Result<Vec<_>, _>>()
-                    .unwrap()
-            })
-            .filter(|v| v.iter().find(|i| i.is_nan() || i.is_infinite()).is_none())
-            .filter(|v| {
-                let cs = ConstraintSystem::<Fr>::new_ref();
-                let a = F64Var::new_witness(cs.clone(), || Ok(v[0])).unwrap();
-                let b = F64Var::new_witness(cs.clone(), || Ok(v[1])).unwrap();
-
-                F64Var::enforce_equal(&op(a), &b).unwrap();
-
-                !cs.is_satisfied().unwrap()
-            })
+            .map(|line| parse_line(line))
+            .filter(|v| is_supported(v))
+            .filter(|v| !is_correct(v))
             .collect::<Vec<_>>();
 
         assert_eq!(r.len(), 0, "{:#?}", r);
@@ -733,23 +868,47 @@ mod tests {
         Ok(())
     }
 
+    fn test_unary_op(
+        test_data: File,
+        op: fn(F64Var<Fr>) -> F64Var<Fr>,
+    ) -> Result<(), Box<dyn Error>> {
+        test_op(
+            test_data,
+            |line| {
+                line.split(' ')
+                    .take(2)
+                    .map(|i| u64::from_str_radix(i, 16).map(f64::from_bits))
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap()
+            },
+            |v| v.iter().find(|i| i.is_nan() || i.is_infinite()).is_none(),
+            |v| {
+                let cs = ConstraintSystem::<Fr>::new_ref();
+                let a = F64Var::new_witness(cs.clone(), || Ok(v[0])).unwrap();
+                let b = F64Var::new_witness(cs.clone(), || Ok(v[1])).unwrap();
+
+                F64Var::enforce_equal(&op(a), &b).unwrap();
+
+                cs.is_satisfied().unwrap()
+            },
+        )
+    }
+
     fn test_binary_op(
         test_data: File,
         op: fn(F64Var<Fr>, F64Var<Fr>) -> F64Var<Fr>,
     ) -> Result<(), Box<dyn Error>> {
-        let r = BufReader::new(test_data)
-            .lines()
-            .collect::<Result<Vec<_>, _>>()?
-            .par_iter()
-            .map(|line| {
+        test_op(
+            test_data,
+            |line| {
                 line.split(' ')
                     .take(3)
                     .map(|i| u64::from_str_radix(i, 16).map(f64::from_bits))
                     .collect::<Result<Vec<_>, _>>()
                     .unwrap()
-            })
-            .filter(|v| v.iter().find(|i| i.is_nan() || i.is_infinite()).is_none())
-            .filter(|v| {
+            },
+            |v| v.iter().find(|i| i.is_nan() || i.is_infinite()).is_none(),
+            |v| {
                 let cs = ConstraintSystem::<Fr>::new_ref();
                 let a = F64Var::new_witness(cs.clone(), || Ok(v[0])).unwrap();
                 let b = F64Var::new_witness(cs.clone(), || Ok(v[1])).unwrap();
@@ -757,13 +916,48 @@ mod tests {
 
                 F64Var::enforce_equal(&op(a, b), &c).unwrap();
 
-                !cs.is_satisfied().unwrap()
-            })
-            .collect::<Vec<_>>();
+                cs.is_satisfied().unwrap()
+            },
+        )
+    }
 
-        assert_eq!(r.len(), 0, "{:#?}", r);
+    fn test_comparison_op(
+        test_data: File,
+        op: fn(F64Var<Fr>, F64Var<Fr>) -> Boolean<Fr>,
+        true_value: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        test_op(
+            test_data,
+            |line| {
+                let s = line
+                    .split(' ')
+                    .take(3)
+                    .map(|i| u64::from_str_radix(i, 16))
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
+                (
+                    f64::from_bits(s[0]),
+                    f64::from_bits(s[1]),
+                    s[2] == true_value,
+                )
+            },
+            |(a, b, _)| {
+                [a, b]
+                    .iter()
+                    .find(|i| i.is_nan() || i.is_infinite())
+                    .is_none()
+            },
+            |(a, b, c)| {
+                let cs = ConstraintSystem::<Fr>::new_ref();
+                let a = F64Var::new_witness(cs.clone(), || Ok(a)).unwrap();
+                let b = F64Var::new_witness(cs.clone(), || Ok(b)).unwrap();
+                let c = Boolean::new_input(cs.clone(), || Ok(c)).unwrap();
 
-        Ok(())
+                Boolean::enforce_equal(&op(a, b), &c).unwrap();
+
+                cs.is_satisfied().unwrap()
+            },
+        )
     }
 
     #[test]
@@ -789,5 +983,41 @@ mod tests {
     #[test]
     fn test_sqrt() -> Result<(), Box<dyn Error>> {
         test_unary_op(File::open("data/sqrt")?, |x| F64Var::sqrt(&x).unwrap())
+    }
+
+    #[test]
+    fn test_lt() -> Result<(), Box<dyn Error>> {
+        test_comparison_op(
+            File::open("data/lt")?,
+            |x, y| F64Var::is_lt(&x, &y).unwrap(),
+            1,
+        )
+    }
+
+    #[test]
+    fn test_le() -> Result<(), Box<dyn Error>> {
+        test_comparison_op(
+            File::open("data/le")?,
+            |x, y| F64Var::is_le(&x, &y).unwrap(),
+            1,
+        )
+    }
+
+    #[test]
+    fn test_gt() -> Result<(), Box<dyn Error>> {
+        test_comparison_op(
+            File::open("data/le")?,
+            |x, y| F64Var::is_gt(&x, &y).unwrap(),
+            0,
+        )
+    }
+
+    #[test]
+    fn test_ge() -> Result<(), Box<dyn Error>> {
+        test_comparison_op(
+            File::open("data/lt")?,
+            |x, y| F64Var::is_ge(&x, &y).unwrap(),
+            0,
+        )
     }
 }
