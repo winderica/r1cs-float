@@ -431,11 +431,10 @@ impl<F: PrimeField> F64Var<F> {
         mantissa: &FpVar<F>,
         exponent: &FpVar<F>,
     ) -> Result<(FpVar<F>, FpVar<F>), SynthesisError> {
-        let one = FpVar::one();
         let overflow = mantissa.is_eq(&FpVar::Constant(F::from(1u128 << 53)))?;
 
         Ok((
-            mantissa * overflow.select(&one.double()?.inverse()?, &one)?,
+            overflow.select(&FpVar::Constant(F::from(1u128 << 52)), &mantissa)?,
             exponent + FpVar::from(overflow),
         ))
     }
@@ -654,6 +653,96 @@ impl<F: PrimeField> F64Var<F> {
     pub fn is_ge(x: &Self, y: &Self) -> Result<Boolean<F>, SynthesisError> {
         Self::less(x, y, &Boolean::FALSE).map(|i| i.not())
     }
+
+    pub fn trunc(x: &Self) -> Result<Self, SynthesisError> {
+        let two = FpVar::Constant(F::from(2u64));
+
+        let e = &x.exponent;
+        let (_, e_ge_0) = Self::to_abs_bit_array(e, 11)?;
+        let e = e_ge_0.select(e, &FpVar::zero())?;
+        let f = e.negate()? + F::from(52u64);
+        let (_, f_ge_0) = Self::to_abs_bit_array(&f, 11)?;
+        let f = f_ge_0.select(&f, &FpVar::zero())?;
+        let m = &x.mantissa;
+        let q = {
+            let cs = m.cs().or(f.cs());
+            let m: BigUint = m.value().unwrap_or_default().into();
+            let f: BigUint = f.value().unwrap_or_default().into();
+            let q = m >> f.to_i64().unwrap();
+            FpVar::new_variable(
+                cs.clone(),
+                || Ok(F::from(q)),
+                if cs.is_none() {
+                    AllocationMode::Constant
+                } else {
+                    AllocationMode::Witness
+                },
+            )?
+        };
+        let d = two.pow_le(&Self::to_bit_array(&f, 6)?)?;
+        let n = &d * q;
+        let r = m - &n;
+        Self::to_bit_array(&r, 53)?;
+        Self::to_bit_array(&(&d - &r - FpVar::one()), 53)?;
+
+        Ok(Self {
+            sign: x.sign.clone(),
+            exponent: e_ge_0.select(&x.exponent, &FpVar::Constant(-F::from(1022u64)))?,
+            mantissa: e_ge_0.select(&n, &FpVar::zero())?,
+        })
+    }
+
+    pub fn floor(x: &Self) -> Result<Self, SynthesisError> {
+        let two = FpVar::Constant(F::from(2u64));
+
+        let e = &x.exponent;
+        let (_, e_ge_0) = Self::to_abs_bit_array(e, 11)?;
+        let e = e_ge_0.select(e, &FpVar::zero())?;
+        let f = e.negate()? + F::from(52u64);
+        let (_, f_ge_0) = Self::to_abs_bit_array(&f, 11)?;
+        let f = f_ge_0.select(&f, &FpVar::zero())?;
+        let m = x.sign.select(&x.mantissa.negate()?, &x.mantissa)? + F::from(1u64 << 53);
+        let q = {
+            let cs = m.cs().or(f.cs());
+            let m: BigUint = m.value().unwrap_or_default().into();
+            let f: BigUint = f.value().unwrap_or_default().into();
+            let q = m >> f.to_i64().unwrap();
+            FpVar::new_variable(
+                cs.clone(),
+                || Ok(F::from(q)),
+                if cs.is_none() {
+                    AllocationMode::Constant
+                } else {
+                    AllocationMode::Witness
+                },
+            )?
+        };
+        let d = two.pow_le(&Self::to_bit_array(&f, 6)?)?;
+        let n = &d * q;
+        let r = m - &n;
+        Self::to_bit_array(&r, 53)?;
+        Self::to_bit_array(&(&d - &r - FpVar::one()), 53)?;
+
+        let n = n - F::from(1u64 << 53);
+        let n = x.sign.select(&n.negate()?, &n)?;
+        let (n, e) = Self::fix_overflow(&n, &x.exponent)?;
+
+        e_ge_0.or(&n.is_zero()?)?.select(
+            &Self {
+                sign: x.sign.clone(),
+                exponent: e,
+                mantissa: n,
+            },
+            &x.sign.select(
+                &Self::new_constant(ConstraintSystemRef::None, -1.)?,
+                &Self::new_constant(ConstraintSystemRef::None, 0.)?,
+            )?,
+        )
+    }
+
+    pub fn ceil(x: &Self) -> Result<Self, SynthesisError> {
+        Ok(Self::floor(&x.neg())?.neg())
+    }
 }
 
 #[cfg(test)]
@@ -843,6 +932,54 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn trunc_constraints() -> Result<(), Box<dyn Error>> {
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        let a = F64Var::new_witness(cs.clone(), || Ok(0.1))?;
+
+        println!(
+            "{}",
+            num_constraints(&cs, || println!("{}", F64Var::trunc(&a).unwrap()))
+        );
+
+        assert!(cs.is_satisfied()?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn floor_constraints() -> Result<(), Box<dyn Error>> {
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        let a = F64Var::new_witness(cs.clone(), || Ok(0.1))?;
+
+        println!(
+            "{}",
+            num_constraints(&cs, || println!("{}", F64Var::floor(&a).unwrap()))
+        );
+
+        assert!(cs.is_satisfied()?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn ceil_constraints() -> Result<(), Box<dyn Error>> {
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        let a = F64Var::new_witness(cs.clone(), || Ok(0.1))?;
+
+        println!(
+            "{}",
+            num_constraints(&cs, || println!("{}", F64Var::ceil(&a).unwrap()))
+        );
+
+        assert!(cs.is_satisfied()?);
+
+        Ok(())
+    }
+
     fn test_op<
         T: Send + Debug,
         P: FnOnce(&String) -> T + Send + Sync + Copy,
@@ -1019,5 +1156,20 @@ mod tests {
             |x, y| F64Var::is_ge(&x, &y).unwrap(),
             0,
         )
+    }
+
+    #[test]
+    fn test_trunc() -> Result<(), Box<dyn Error>> {
+        test_unary_op(File::open("data/trunc")?, |x| F64Var::trunc(&x).unwrap())
+    }
+
+    #[test]
+    fn test_floor() -> Result<(), Box<dyn Error>> {
+        test_unary_op(File::open("data/floor")?, |x| F64Var::floor(&x).unwrap())
+    }
+
+    #[test]
+    fn test_ceil() -> Result<(), Box<dyn Error>> {
+        test_unary_op(File::open("data/ceil")?, |x| F64Var::ceil(&x).unwrap())
     }
 }
