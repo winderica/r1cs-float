@@ -266,9 +266,7 @@ impl<F: PrimeField> F64Var<F> {
         bits: &[bool],
         mode: AllocationMode,
     ) -> Result<Vec<Boolean<F>>, SynthesisError> {
-        bits.iter()
-            .map(|i| Boolean::new_variable(cs.clone(), || Ok(i), mode))
-            .collect()
+        Vec::<Boolean<F>>::new_variable(cs, || Ok(bits), mode)
     }
 
     fn to_bit_array(x: &FpVar<F>, length: usize) -> Result<Vec<Boolean<F>>, SynthesisError> {
@@ -393,36 +391,16 @@ impl<F: PrimeField> F64Var<F> {
     }
 
     fn round(mantissa: &FpVar<F>, mantissa_bit_length: usize) -> Result<FpVar<F>, SynthesisError> {
-        let cs = mantissa.cs();
         let w = mantissa_bit_length - 53;
 
-        let qq = {
-            let mut qq = mantissa.value().unwrap_or_default().into_repr();
-            qq.divn((w + 1) as u32);
+        let bits = Self::to_bit_array(mantissa, mantissa_bit_length)?;
 
-            FpVar::new_variable(
-                cs.clone(),
-                || Ok(F::from_repr(qq).unwrap()),
-                if cs.is_none() {
-                    AllocationMode::Constant
-                } else {
-                    AllocationMode::Witness
-                },
-            )?
-        };
-
-        let rr = mantissa - &qq * F::from(BigUint::one() << (w + 1));
-        let rr_bits = Self::to_bit_array(&rr, w + 1)?;
-
-        let q_lsb = FpVar::from(rr_bits[w].clone());
-        let r_msb = FpVar::from(rr_bits[w - 1].clone());
-
-        let q = qq.double()? + &q_lsb;
-        let r = Boolean::le_bits_to_fp_var(&rr_bits[..w])?;
+        let q = Boolean::le_bits_to_fp_var(&bits[w..])?;
+        let r = Boolean::le_bits_to_fp_var(&bits[..w])?;
 
         let is_half = r.is_eq(&FpVar::Constant(F::from(BigUint::one() << (w - 1))))?;
 
-        let carry = is_half.select(&q_lsb, &r_msb)?;
+        let carry = FpVar::from(is_half.select(&bits[w], &bits[w - 1])?);
 
         Ok(q + carry)
     }
@@ -516,6 +494,7 @@ impl<F: PrimeField> F64Var<F> {
 
         let sign = x.sign.xor(&y.sign)?;
 
+        // TODO: check me
         let q = {
             let cs = x.mantissa.cs().or(y.mantissa.cs());
             let x: BigUint = x.mantissa.value().unwrap_or(F::zero()).into();
@@ -562,6 +541,9 @@ impl<F: PrimeField> F64Var<F> {
 
         let m = &x.mantissa * F::from(BigUint::one() << L_SIZE);
         let m = e_lsb.select(&m.double()?, &m)?;
+        // We don't check the bit length of `n` here,
+        // because `Self::normalize` implicitly enforces `n < 2 ** ((L_SIZE + R_SIZE) / 2)`,
+        // which implies that `n.square()` does not overflow.
         let n = {
             let cs = m.cs();
             let m: BigUint = m.value().unwrap_or_default().into();
@@ -669,15 +651,15 @@ impl<F: PrimeField> F64Var<F> {
             let m: BigUint = m.value().unwrap_or_default().into();
             let f: BigUint = f.value().unwrap_or_default().into();
             let q = m >> f.to_i64().unwrap();
-            FpVar::new_variable(
+            Boolean::le_bits_to_fp_var(&Self::new_bits_variable(
                 cs.clone(),
-                || Ok(F::from(q)),
+                &F::from(q).into_repr().to_bits_le()[..53],
                 if cs.is_none() {
                     AllocationMode::Constant
                 } else {
                     AllocationMode::Witness
                 },
-            )?
+            )?)?
         };
         let d = two.pow_le(&Self::to_bit_array(&f, 6)?)?;
         let n = &d * q;
@@ -707,15 +689,15 @@ impl<F: PrimeField> F64Var<F> {
             let m: BigUint = m.value().unwrap_or_default().into();
             let f: BigUint = f.value().unwrap_or_default().into();
             let q = m >> f.to_i64().unwrap();
-            FpVar::new_variable(
+            Boolean::le_bits_to_fp_var(&Self::new_bits_variable(
                 cs.clone(),
-                || Ok(F::from(q)),
+                &F::from(q).into_repr().to_bits_le()[..54],
                 if cs.is_none() {
                     AllocationMode::Constant
                 } else {
                     AllocationMode::Witness
                 },
-            )?
+            )?)?
         };
         let d = two.pow_le(&Self::to_bit_array(&f, 6)?)?;
         let n = &d * q;

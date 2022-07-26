@@ -46,13 +46,13 @@ This project is still in its early stages and hasn't been audited/reviewed by th
                 * [x] `ceil`
                 * [ ] `round`
 * Highly optimized
-    * `f64::{add, sub}`: 378 constraints
-    * `f64::mul`: 347 constraints
-    * `f64::div`: 563 constraints
-    * `f64::sqrt`: 439 constraints
+    * `f64::{add, sub}`: 430 constraints
+    * `f64::mul`: 399 constraints
+    * `f64::div`: 615 constraints
+    * `f64::sqrt`: 491 constraints
     * `f64::{lt, gt, le, ge}`: 86 constraints
-    * `f64::trunc`: 153 constraints
-    * `f64::{floor, ceil}`: 164 constraints
+    * `f64::trunc`: 206 constraints
+    * `f64::{floor, ceil}`: 218 constraints
 
 ## Usage
 
