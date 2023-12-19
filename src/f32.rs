@@ -1,6 +1,6 @@
 use crate::float::FloatVar;
 
-pub type F64Var<F> = FloatVar<F, 11, 52>;
+pub type F32Var<F> = FloatVar<F, 8, 23>;
 
 #[cfg(test)]
 mod tests {
@@ -36,7 +36,7 @@ mod tests {
 
         println!(
             "{}",
-            num_constraints(&cs, || F64Var::new_witness(cs.clone(), || Ok(0.1f64)).unwrap())
+            num_constraints(&cs, || F32Var::new_witness(cs.clone(), || Ok(0.1f32)).unwrap())
         );
 
         assert!(cs.is_satisfied()?);
@@ -48,8 +48,8 @@ mod tests {
     fn add_constraints() -> Result<(), Box<dyn Error>> {
         let cs = ConstraintSystem::<Fr>::new_ref();
 
-        let a = F64Var::new_witness(cs.clone(), || Ok(0.1f64))?;
-        let b = F64Var::new_witness(cs.clone(), || Ok(0.2f64))?;
+        let a = F32Var::new_witness(cs.clone(), || Ok(0.1f32))?;
+        let b = F32Var::new_witness(cs.clone(), || Ok(0.2f32))?;
 
         println!("{}", num_constraints(&cs, || println!("{}", a + b)));
 
@@ -62,8 +62,8 @@ mod tests {
     fn sub_constraints() -> Result<(), Box<dyn Error>> {
         let cs = ConstraintSystem::<Fr>::new_ref();
 
-        let a = F64Var::new_witness(cs.clone(), || Ok(0.1f64))?;
-        let b = F64Var::new_witness(cs.clone(), || Ok(0.2f64))?;
+        let a = F32Var::new_witness(cs.clone(), || Ok(0.1f32))?;
+        let b = F32Var::new_witness(cs.clone(), || Ok(0.2f32))?;
 
         println!("{}", num_constraints(&cs, || println!("{}", a - b)));
 
@@ -76,8 +76,8 @@ mod tests {
     fn mul_constraints() -> Result<(), Box<dyn Error>> {
         let cs = ConstraintSystem::<Fr>::new_ref();
 
-        let a = F64Var::new_witness(cs.clone(), || Ok(0.1f64))?;
-        let b = F64Var::new_witness(cs.clone(), || Ok(0.2f64))?;
+        let a = F32Var::new_witness(cs.clone(), || Ok(0.1f32))?;
+        let b = F32Var::new_witness(cs.clone(), || Ok(0.2f32))?;
 
         println!("{}", num_constraints(&cs, || println!("{}", a * b)));
 
@@ -90,8 +90,8 @@ mod tests {
     fn div_constraints() -> Result<(), Box<dyn Error>> {
         let cs = ConstraintSystem::<Fr>::new_ref();
 
-        let a = F64Var::new_witness(cs.clone(), || Ok(0.1f64))?;
-        let b = F64Var::new_witness(cs.clone(), || Ok(0.2f64))?;
+        let a = F32Var::new_witness(cs.clone(), || Ok(0.1f32))?;
+        let b = F32Var::new_witness(cs.clone(), || Ok(0.2f32))?;
 
         println!("{}", num_constraints(&cs, || println!("{}", a / b)));
 
@@ -104,11 +104,11 @@ mod tests {
     fn sqrt_constraints() -> Result<(), Box<dyn Error>> {
         let cs = ConstraintSystem::<Fr>::new_ref();
 
-        let a = F64Var::new_witness(cs.clone(), || Ok(0.1f64))?;
+        let a = F32Var::new_witness(cs.clone(), || Ok(0.1f32))?;
 
         println!(
             "{}",
-            num_constraints(&cs, || println!("{}", F64Var::sqrt(&a).unwrap()))
+            num_constraints(&cs, || println!("{}", F32Var::sqrt(&a).unwrap()))
         );
 
         assert!(cs.is_satisfied()?);
@@ -120,14 +120,14 @@ mod tests {
     fn lt_constraints() -> Result<(), Box<dyn Error>> {
         let cs = ConstraintSystem::<Fr>::new_ref();
 
-        let a = F64Var::new_witness(cs.clone(), || Ok(0.1f64))?;
-        let b = F64Var::new_witness(cs.clone(), || Ok(0.2f64))?;
+        let a = F32Var::new_witness(cs.clone(), || Ok(0.1f32))?;
+        let b = F32Var::new_witness(cs.clone(), || Ok(0.2f32))?;
 
         println!(
             "{}",
             num_constraints(&cs, || println!(
                 "{}",
-                F64Var::is_lt(&a, &b).unwrap().value().unwrap()
+                F32Var::is_lt(&a, &b).unwrap().value().unwrap()
             ))
         );
 
@@ -140,14 +140,14 @@ mod tests {
     fn le_constraints() -> Result<(), Box<dyn Error>> {
         let cs = ConstraintSystem::<Fr>::new_ref();
 
-        let a = F64Var::new_witness(cs.clone(), || Ok(0.1f64))?;
-        let b = F64Var::new_witness(cs.clone(), || Ok(0.2f64))?;
+        let a = F32Var::new_witness(cs.clone(), || Ok(0.1f32))?;
+        let b = F32Var::new_witness(cs.clone(), || Ok(0.2f32))?;
 
         println!(
             "{}",
             num_constraints(&cs, || println!(
                 "{}",
-                F64Var::is_le(&a, &b).unwrap().value().unwrap()
+                F32Var::is_le(&a, &b).unwrap().value().unwrap()
             ))
         );
 
@@ -160,14 +160,14 @@ mod tests {
     fn gt_constraints() -> Result<(), Box<dyn Error>> {
         let cs = ConstraintSystem::<Fr>::new_ref();
 
-        let a = F64Var::new_witness(cs.clone(), || Ok(0.1f64))?;
-        let b = F64Var::new_witness(cs.clone(), || Ok(0.2f64))?;
+        let a = F32Var::new_witness(cs.clone(), || Ok(0.1f32))?;
+        let b = F32Var::new_witness(cs.clone(), || Ok(0.2f32))?;
 
         println!(
             "{}",
             num_constraints(&cs, || println!(
                 "{}",
-                F64Var::is_gt(&a, &b).unwrap().value().unwrap()
+                F32Var::is_gt(&a, &b).unwrap().value().unwrap()
             ))
         );
 
@@ -180,14 +180,14 @@ mod tests {
     fn ge_constraints() -> Result<(), Box<dyn Error>> {
         let cs = ConstraintSystem::<Fr>::new_ref();
 
-        let a = F64Var::new_witness(cs.clone(), || Ok(0.1f64))?;
-        let b = F64Var::new_witness(cs.clone(), || Ok(0.2f64))?;
+        let a = F32Var::new_witness(cs.clone(), || Ok(0.1f32))?;
+        let b = F32Var::new_witness(cs.clone(), || Ok(0.2f32))?;
 
         println!(
             "{}",
             num_constraints(&cs, || println!(
                 "{}",
-                F64Var::is_ge(&a, &b).unwrap().value().unwrap()
+                F32Var::is_ge(&a, &b).unwrap().value().unwrap()
             ))
         );
 
@@ -200,11 +200,11 @@ mod tests {
     fn trunc_constraints() -> Result<(), Box<dyn Error>> {
         let cs = ConstraintSystem::<Fr>::new_ref();
 
-        let a = F64Var::new_witness(cs.clone(), || Ok(0.1f64))?;
+        let a = F32Var::new_witness(cs.clone(), || Ok(0.1f32))?;
 
         println!(
             "{}",
-            num_constraints(&cs, || println!("{}", F64Var::trunc(&a).unwrap()))
+            num_constraints(&cs, || println!("{}", F32Var::trunc(&a).unwrap()))
         );
 
         assert!(cs.is_satisfied()?);
@@ -216,11 +216,11 @@ mod tests {
     fn floor_constraints() -> Result<(), Box<dyn Error>> {
         let cs = ConstraintSystem::<Fr>::new_ref();
 
-        let a = F64Var::new_witness(cs.clone(), || Ok(0.1f64))?;
+        let a = F32Var::new_witness(cs.clone(), || Ok(0.1f32))?;
 
         println!(
             "{}",
-            num_constraints(&cs, || println!("{}", F64Var::floor(&a).unwrap()))
+            num_constraints(&cs, || println!("{}", F32Var::floor(&a).unwrap()))
         );
 
         assert!(cs.is_satisfied()?);
@@ -232,11 +232,11 @@ mod tests {
     fn ceil_constraints() -> Result<(), Box<dyn Error>> {
         let cs = ConstraintSystem::<Fr>::new_ref();
 
-        let a = F64Var::new_witness(cs.clone(), || Ok(0.1f64))?;
+        let a = F32Var::new_witness(cs.clone(), || Ok(0.1f32))?;
 
         println!(
             "{}",
-            num_constraints(&cs, || println!("{}", F64Var::ceil(&a).unwrap()))
+            num_constraints(&cs, || println!("{}", F32Var::ceil(&a).unwrap()))
         );
 
         assert!(cs.is_satisfied()?);
@@ -272,60 +272,60 @@ mod tests {
 
     fn test_unary_op(
         test_data: File,
-        op: fn(F64Var<Fr>) -> F64Var<Fr>,
+        op: fn(F32Var<Fr>) -> F32Var<Fr>,
     ) -> Result<(), Box<dyn Error>> {
         test_op(
             test_data,
             |line| {
                 line.split(' ')
                     .take(2)
-                    .map(|i| u64::from_str_radix(i, 16).map(f64::from_bits))
+                    .map(|i| u32::from_str_radix(i, 16).map(f32::from_bits))
                     .collect::<Result<Vec<_>, _>>()
                     .unwrap()
             },
             |_| true,
             |v| {
                 let cs = ConstraintSystem::<Fr>::new_ref();
-                let a = F64Var::new_witness(cs.clone(), || Ok(v[0])).unwrap();
+                let a = F32Var::new_witness(cs.clone(), || Ok(v[0])).unwrap();
 
-                let r = op(a).value().unwrap().to_u64().unwrap();
+                let r = op(a).value().unwrap().to_u32().unwrap();
 
                 cs.is_satisfied().unwrap()
-                    && ((f64::from_bits(r).is_nan() && v[1].is_nan()) || r == v[1].to_bits())
+                    && ((f32::from_bits(r).is_nan() && v[1].is_nan()) || r == v[1].to_bits())
             },
         )
     }
 
     fn test_binary_op(
         test_data: File,
-        op: fn(F64Var<Fr>, F64Var<Fr>) -> F64Var<Fr>,
+        op: fn(F32Var<Fr>, F32Var<Fr>) -> F32Var<Fr>,
     ) -> Result<(), Box<dyn Error>> {
         test_op(
             test_data,
             |line| {
                 line.split(' ')
                     .take(3)
-                    .map(|i| u64::from_str_radix(i, 16).map(f64::from_bits))
+                    .map(|i| u32::from_str_radix(i, 16).map(f32::from_bits))
                     .collect::<Result<Vec<_>, _>>()
                     .unwrap()
             },
             |_| true,
             |v| {
                 let cs = ConstraintSystem::<Fr>::new_ref();
-                let a = F64Var::new_witness(cs.clone(), || Ok(v[0])).unwrap();
-                let b = F64Var::new_witness(cs.clone(), || Ok(v[1])).unwrap();
+                let a = F32Var::new_witness(cs.clone(), || Ok(v[0])).unwrap();
+                let b = F32Var::new_witness(cs.clone(), || Ok(v[1])).unwrap();
 
-                let r = op(a, b).value().unwrap().to_u64().unwrap();
+                let r = op(a, b).value().unwrap().to_u32().unwrap();
 
                 cs.is_satisfied().unwrap()
-                    && ((f64::from_bits(r).is_nan() && v[2].is_nan()) || r == v[2].to_bits())
+                    && ((f32::from_bits(r).is_nan() && v[2].is_nan()) || r == v[2].to_bits())
             },
         )
     }
 
     fn test_comparison_op(
         test_data: File,
-        op: fn(F64Var<Fr>, F64Var<Fr>) -> Boolean<Fr>,
+        op: fn(F32Var<Fr>, F32Var<Fr>) -> Boolean<Fr>,
     ) -> Result<(), Box<dyn Error>> {
         test_op(
             test_data,
@@ -333,16 +333,16 @@ mod tests {
                 let s = line
                     .split(' ')
                     .take(3)
-                    .map(|i| u64::from_str_radix(i, 16))
+                    .map(|i| u32::from_str_radix(i, 16))
                     .collect::<Result<Vec<_>, _>>()
                     .unwrap();
-                (f64::from_bits(s[0]), f64::from_bits(s[1]), s[2] == 1)
+                (f32::from_bits(s[0]), f32::from_bits(s[1]), s[2] == 1)
             },
             |_| true,
             |(a, b, c)| {
                 let cs = ConstraintSystem::<Fr>::new_ref();
-                let a = F64Var::new_witness(cs.clone(), || Ok(*a)).unwrap();
-                let b = F64Var::new_witness(cs.clone(), || Ok(*b)).unwrap();
+                let a = F32Var::new_witness(cs.clone(), || Ok(*a)).unwrap();
+                let b = F32Var::new_witness(cs.clone(), || Ok(*b)).unwrap();
 
                 let r = op(a, b).value().unwrap();
 
@@ -353,73 +353,73 @@ mod tests {
 
     #[test]
     fn test_add() -> Result<(), Box<dyn Error>> {
-        test_binary_op(File::open("data/f64/add")?, std::ops::Add::add)
+        test_binary_op(File::open("data/f32/add")?, std::ops::Add::add)
     }
 
     #[test]
     fn test_sub() -> Result<(), Box<dyn Error>> {
-        test_binary_op(File::open("data/f64/sub")?, std::ops::Sub::sub)
+        test_binary_op(File::open("data/f32/sub")?, std::ops::Sub::sub)
     }
 
     #[test]
     fn test_mul() -> Result<(), Box<dyn Error>> {
-        test_binary_op(File::open("data/f64/mul")?, std::ops::Mul::mul)
+        test_binary_op(File::open("data/f32/mul")?, std::ops::Mul::mul)
     }
 
     #[test]
     fn test_div() -> Result<(), Box<dyn Error>> {
-        test_binary_op(File::open("data/f64/div")?, std::ops::Div::div)
+        test_binary_op(File::open("data/f32/div")?, std::ops::Div::div)
     }
 
     #[test]
     fn test_sqrt() -> Result<(), Box<dyn Error>> {
-        test_unary_op(File::open("data/f64/sqrt")?, |x| F64Var::sqrt(&x).unwrap())
+        test_unary_op(File::open("data/f32/sqrt")?, |x| F32Var::sqrt(&x).unwrap())
     }
 
     #[test]
     fn test_lt() -> Result<(), Box<dyn Error>> {
-        test_comparison_op(File::open("data/f64/lt")?, |x, y| {
-            F64Var::is_lt(&x, &y).unwrap()
+        test_comparison_op(File::open("data/f32/lt")?, |x, y| {
+            F32Var::is_lt(&x, &y).unwrap()
         })
     }
 
     #[test]
     fn test_le() -> Result<(), Box<dyn Error>> {
-        test_comparison_op(File::open("data/f64/le")?, |x, y| {
-            F64Var::is_le(&x, &y).unwrap()
+        test_comparison_op(File::open("data/f32/le")?, |x, y| {
+            F32Var::is_le(&x, &y).unwrap()
         })
     }
 
     #[test]
     fn test_gt() -> Result<(), Box<dyn Error>> {
-        test_comparison_op(File::open("data/f64/lt")?, |x, y| {
-            F64Var::is_gt(&y, &x).unwrap()
+        test_comparison_op(File::open("data/f32/lt")?, |x, y| {
+            F32Var::is_gt(&y, &x).unwrap()
         })
     }
 
     #[test]
     fn test_ge() -> Result<(), Box<dyn Error>> {
-        test_comparison_op(File::open("data/f64/le")?, |x, y| {
-            F64Var::is_ge(&y, &x).unwrap()
+        test_comparison_op(File::open("data/f32/le")?, |x, y| {
+            F32Var::is_ge(&y, &x).unwrap()
         })
     }
 
     #[test]
     fn test_trunc() -> Result<(), Box<dyn Error>> {
-        test_unary_op(File::open("data/f64/trunc")?, |x| {
-            F64Var::trunc(&x).unwrap()
+        test_unary_op(File::open("data/f32/trunc")?, |x| {
+            F32Var::trunc(&x).unwrap()
         })
     }
 
     #[test]
     fn test_floor() -> Result<(), Box<dyn Error>> {
-        test_unary_op(File::open("data/f64/floor")?, |x| {
-            F64Var::floor(&x).unwrap()
+        test_unary_op(File::open("data/f32/floor")?, |x| {
+            F32Var::floor(&x).unwrap()
         })
     }
 
     #[test]
     fn test_ceil() -> Result<(), Box<dyn Error>> {
-        test_unary_op(File::open("data/f64/ceil")?, |x| F64Var::ceil(&x).unwrap())
+        test_unary_op(File::open("data/f32/ceil")?, |x| F32Var::ceil(&x).unwrap())
     }
 }

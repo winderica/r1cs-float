@@ -4,27 +4,26 @@ version = "0.0.0"
 edition = "2021"
 
 [dependencies]
-ark-r1cs-std = "^0.3.0"
-ark-relations = "^0.3.0"
-ark-ff = { version = "^0.3.0", features = ["asm"] }
-rand = "^0.8.0"
-num = { version = "^0.4.0", features = ["rand"] }
+ark-std = { version = "^0.4.0", features = ["parallel", "print-trace"] }
+ark-serialize = { version = "^0.4.0" }
+ark-ec = { version = "0.4.0", features = ["parallel"] }
+ark-ff = { version = "^0.4.0", features = ["asm", "parallel"] }
+ark-poly = { version = "^0.4.0", features = ["parallel"] }
+rand = { version = "^0.8.0" }
+num = { version = "^0.4.0", features = ["rand", "serde"] }
+tracing = { version = "0.1", default-features = false, features = [ "attributes" ] }
+sha2 = "*"
+rayon = "^1.5.3"
+ark-bls12-381 = { version = "^0.4.0" }
 
 [dev-dependencies]
-criterion = "^0.3.0"
-ark-groth16 = "^0.3.0"
-ark-bls12-381 = "^0.3.0"
-rayon = "^1.5.3"
 
-[[bench]]
-name = "bench"
-harness = false
+[features]
+default = ["parallel"]
+parallel = []
 
 [profile.dev]
 opt-level = 3
 
 [profile.test]
 opt-level = 3
-
-[lib]
-bench = false
