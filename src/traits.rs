@@ -16,16 +16,24 @@ pub trait BitDecompose<F: PrimeField>
 where
     Self: Sized,
 {
+    /// Enforce that `self` has at most `length` bits, i.e., `0 <= self < 2^length`.
     fn enforce_bit_length(&self, length: usize) -> Result<(), SynthesisError>;
 
+    /// Compute the absolute value of `self` with `length` bits.
+    /// Return the result and the original sign.
     fn abs(&self, length: usize) -> Result<(Self, Boolean<F>), SynthesisError>;
 
+    /// Determine whether `self` is positive.
     fn is_positive(&self, length: usize) -> Result<Boolean<F>, SynthesisError> {
         Ok(self.abs(length)?.1)
     }
 
+    /// Compute the maximum of `self` and `other`,
+    /// where the difference between `self` and `other` has at most `diff_length` bits.
     fn max(&self, other: &Self, diff_length: usize) -> Result<Self, SynthesisError>;
 
+    /// Compute the minimum of `self` and `other`,
+    /// where the difference between `self` and `other` has at most `diff_length` bits.
     fn min(&self, other: &Self, diff_length: usize) -> Result<Self, SynthesisError>;
 }
 
