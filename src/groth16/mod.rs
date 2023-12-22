@@ -168,6 +168,7 @@ mod tests {
     use ark_ff::BigInteger;
     use ark_std::test_rng;
     use rand::SeedableRng;
+    use num::Integer;
 
     struct MySillyCircuit<F: PrimeField> {
         a: F,
@@ -181,7 +182,7 @@ mod tests {
                 let mut x = FpVar::new_witness(cs.clone(), || Ok(self.a))?;
                 x += FpVar::constant(F::from(i));
 
-                let extended_length = length.next_multiple_of(LOOKUP_TABLE_BITS);
+                let extended_length = length.next_multiple_of(&LOOKUP_TABLE_BITS);
                 let num_chunks = extended_length / LOOKUP_TABLE_BITS;
                 let mut chunks = x
                     .value()

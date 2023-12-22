@@ -1,6 +1,6 @@
 use ark_ff::{BigInteger, PrimeField};
 use ark_std::One;
-use num::BigUint;
+use num::{BigUint, Integer};
 
 use crate::{
     groth16::LOOKUP_TABLE_BITS,
@@ -39,7 +39,7 @@ impl<F: PrimeField> BitDecompose<F> for FpVar<F> {
         //     assert!(x < BigUint::one() << length);
         // }
 
-        let extended_length = length.next_multiple_of(LOOKUP_TABLE_BITS);
+        let extended_length = length.next_multiple_of(&LOOKUP_TABLE_BITS);
         let num_chunks = extended_length / LOOKUP_TABLE_BITS;
 
         let mut chunks = self

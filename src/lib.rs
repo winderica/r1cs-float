@@ -1,5 +1,4 @@
-#![feature(int_roundings)]
-mod float;
+pub mod float;
 pub mod f32;
 pub mod f64;
 
