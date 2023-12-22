@@ -10,15 +10,15 @@ This project is still in its early stages and hasn't been audited/reviewed by th
 
 * Compatible with IEEE 754
     * Formats
-        * [ ] Single precision (`binary32`)
+        * [x] Single precision (`binary32`)
         * [x] Double precision (`binary64`)
         * [ ] Quadruple precision (`binary128`)
     * Values
         * [x] Signed zero (+0 and -0)
         * [x] Subnormal numbers
         * [x] Normal numbers
-        * [ ] Infinity
-        * [ ] NaNs
+        * [x] Infinity
+        * [x] NaNs
     * Operations
         * Mathematical operations
             * [x] `add`
@@ -45,14 +45,18 @@ This project is still in its early stages and hasn't been audited/reviewed by th
                 * [x] `floor`
                 * [x] `ceil`
                 * [ ] `round`
-* Highly optimized
-    * `f64::{add, sub}`: 430 constraints
-    * `f64::mul`: 399 constraints
-    * `f64::div`: 615 constraints
-    * `f64::sqrt`: 491 constraints
-    * `f64::{lt, gt, le, ge}`: 86 constraints
-    * `f64::trunc`: 206 constraints
-    * `f64::{floor, ceil}`: 218 constraints
+* Highly optimized (C: Number of R1CS constraints, B: Number of bits queried to the lookup table)
+    | Operation      | binary32  | binary64  |
+    |----------------|-----------|-----------|
+    | new            | 15C, 53B  | 15C, 114B |
+    | neg, abs       | 0C, 0B    | 0C, 0B    |
+    | add, sub       | 45C, 125B | 45C, 250B |
+    | mul            | 36C, 145B | 36C, 299B |
+    | div            | 45C, 149B | 45C, 303B |
+    | sqrt           | 28C, 110B | 28C, 229B |
+    | lt, gt, le, ge | 27C, 33B  | 27C, 65B  |
+    | trunc          | 13C, 64B  | 13C, 128B |
+    | ceil, round    | 20C, 64B  | 20C, 128B |
 
 ## Usage
 
