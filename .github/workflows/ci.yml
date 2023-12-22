@@ -11,26 +11,9 @@ env:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v3
     - name: Test
       run: cargo test --verbose
-    - name: Bench
-      run: cargo bench -- --output-format bencher | tee output.txt
-    - name: Download previous benchmark data
-      uses: actions/cache@v3
-      with:
-        path: ./cache
-        key: ${{ runner.os }}-benchmark
-    - name: Store benchmark result
-      uses: benchmark-action/github-action-benchmark@v1
-      with:
-        tool: 'cargo'
-        output-file-path: output.txt
-        external-data-json-path: ./cache/benchmark-data.json
-        fail-on-alert: true
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        comment-always: true
